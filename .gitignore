@@ -49,3 +49,7 @@ docs/site/
 # environment.
 Manifest.toml
 .Rproj.user
+
+
+# un track files
+code/test_linear.jl
