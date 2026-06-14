@@ -1,3 +1,6 @@
+
+ENDI = EcologicalNetworksDynamics.Internals
+
 get_A(fw) = Matrix(fw.A)
 
 function random_linear_response_params(fw; α_range = (1.0, 10.0))
@@ -167,6 +170,9 @@ function equilibrium_foodweb_summary(fw, B_final, α, ω, e, r, K, x;
     L_eq = sum(A_eq .> 0)
     C_eq = L_eq / S_eq^2
 
+    TL_eq = ENDI.trophic_levels(A_eq) 
+    maxTL_eq = maximum(TL_eq)
+
     # --------------------------------------------------------
     # 4. Build a new food web object for the realised subweb
     # --------------------------------------------------------
@@ -204,8 +210,10 @@ function equilibrium_foodweb_summary(fw, B_final, α, ω, e, r, K, x;
         S_eq = S_eq,
         L_eq = L_eq,
         C_eq = C_eq,
+        maxTL_eq = maxTL_eq,
         A_eq = A_eq,
         B_eq = B_eq,
+        TL_eq = TL_eq,
         α_eq = α_eq,
         ω_eq = sparse(ω_eq),
         e_eq = e_eq,
