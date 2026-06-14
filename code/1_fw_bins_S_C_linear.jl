@@ -9,10 +9,12 @@ using SciMLBase: CallbackSet
 using DiffEqCallbacks
 using SparseArrays
 using JLD2
+using DataFrames
+using Arrow
 
 include("internal.jl")
 
-Random.seed!(2026)
+Random.seed!(2025)
 
 # ============================================================
 # Settings
@@ -37,12 +39,12 @@ C_range = (0.03, 0.40)
 
 max_attempts = 100_000
 
-α_range = (1.0, 10.0)
+α_range = (0.1, 1.0)
 Z = 100
-tmax = 3_000
-tmin = 1_000
+tmax = 2000
+tmin = 500
 
-extinction_threshold = 1e-8
+extinction_threshold = 1e-12
 
 out_dir = "data/model_fws/linear_response_niche_webs"
 mkpath(out_dir)
@@ -300,6 +302,7 @@ end
 # ============================================================
 # Save
 # ============================================================
+
 jldsave(
     out_file;
     valid_food_webs = valid_food_webs,
@@ -310,9 +313,72 @@ jldsave(
     n_rep_per_combo = n_rep_per_combo
 )
 
-println("Finished.")
-println("Valid food webs: ", length(valid_food_webs))
-println("Attempts: ", attempt)
-println("Target counts: ", target_counts)
-println("Failure counts: ", fail_counts)
-println("Saved to: ", out_file)
+# save to feather for R script
+# One R-friendly Feather file
+feather_file = joinpath(out_dir, "valid_food_webs_dependency_data.feather")
+
+dep_rows = DataFrame[]
+
+for fw in valid_food_webs
+    S_eq = fw.S_eq
+    cij_eq = fw.α_eq .* fw.ω_eq
+
+    prey_idx = Int[]
+    predator_idx = Int[]
+    cij_value = Float64[]
+    alpha_value = Float64[]
+    omega_value = Float64[]
+    B_prey = Float64[]
+    B_predator = Float64[]
+    e_predator = Float64[]
+    J_topdown = Float64[]
+    J_bottomup = Float64[]
+
+    for i in 1:S_eq, j in 1:S_eq
+        if cij_eq[i, j] > 0
+            push!(prey_idx, i)
+            push!(predator_idx, j)
+
+            push!(cij_value, cij_eq[i, j])
+            push!(alpha_value, fw.α_eq[i, j])
+            push!(omega_value, fw.ω_eq[i, j])
+
+            push!(B_prey, fw.B_eq[i])
+            push!(B_predator, fw.B_eq[j])
+            push!(e_predator, fw.e_eq[j])
+
+            push!(J_topdown, fw.J_emp[i, j])
+            push!(J_bottomup, fw.J_emp[j, i])
+        end
+    end
+
+    push!(
+        dep_rows,
+        DataFrame(
+            valid_id = fill(fw.valid_id, length(cij_value)),
+            S_label = fill(fw.S_label, length(cij_value)),
+            C_label = fill(fw.C_label, length(cij_value)),
+            S_target = fill(fw.S_target, length(cij_value)),
+            C_target = fill(fw.C_target, length(cij_value)),
+            rep = fill(fw.rep, length(cij_value)),
+            S_eq = fill(fw.S_eq, length(cij_value)),
+            L_eq = fill(fw.L_eq, length(cij_value)),
+            C_eq = fill(fw.C_eq, length(cij_value)),
+            Re_emp = fill(fw.Re_emp, length(cij_value)),
+            Re_ode = fill(fw.Re_ode, length(cij_value)),
+            prey = prey_idx,
+            predator = predator_idx,
+            cij = cij_value,
+            alpha = alpha_value,
+            omega = omega_value,
+            B_prey = B_prey,
+            B_predator = B_predator,
+            e_predator = e_predator,
+            J_topdown = J_topdown,
+            J_bottomup = J_bottomup
+        )
+    )
+end
+
+niche_foodwebs_df = vcat(dep_rows...)
+Arrow.write(feather_file, niche_foodwebs_df)
