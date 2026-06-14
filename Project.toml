@@ -1,0 +1,9 @@
+[deps]
+DiffEqCallbacks = "459566f4-90b8-5000-8ac3-15dfb0a30def"
+DifferentialEquations = "0c46a032-eb83-5123-abaf-570d42b7fbaa"
+Distributions = "31c24e10-a181-5473-b8eb-7969acd0382f"
+EcologicalNetworksDynamics = "2fd9189a-c387-4076-88b7-22b33b5a4388"
+JLD2 = "033835bb-8acc-5ee8-8aae-3f567f8a3819"
+Plots = "91a5bcdd-55d7-5caf-9e0b-520d859cae80"
+SciMLBase = "0bca4576-84f4-4d90-8ffe-ffa030f20462"
+SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
