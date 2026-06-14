@@ -1,3 +1,4 @@
+
 using Pkg
 Pkg.activate(".")
 
@@ -22,13 +23,16 @@ Random.seed!(2026)
 # Realised richness bins.
 # Connectance is not binned; it is kept as a continuous realised variable.
 S_bins = [
-    (label = "S5_14", min = 5, max = 14, target = 10),
-    (label = "S15_24", min = 15, max = 24, target = 20),
-    (label = "S25_34", min = 25, max = 34, target = 30),
-    (label = "S35_44", min = 35, max = 44, target = 40)
+    (label = "S6_10", min = 6, max = 10, target = 8),
+    (label = "S11_15", min = 11, max = 15, target = 13),
+    (label = "S16_20", min = 16, max = 20, target = 18),
+    (label = "S21_25", min = 21, max = 25, target = 23),
+    (label = "S26_30", min = 26, max = 30, target = 28),
+    (label = "S31_35", min = 31, max = 35, target = 33),
+    (label = "S36_40", min = 36, max = 40, target = 38)
 ]
 
-n_rep_per_Sbin = 1
+n_rep_per_Sbin = 5
 n_valid_target = length(S_bins) * n_rep_per_Sbin
 
 # Initial niche-model ranges.
@@ -39,11 +43,11 @@ C_range = (0.03, 0.40)
 # Keep realised connectance within a broad range.
 # This avoids extremely sparse or extremely dense realised webs,
 # but does not force connectance into bins.
-C_eq_range = (0.03, 0.40)
+C_eq_range = (0.03, 0.35)
 
 max_attempts = 200_000
 
-α_range = (0.1, 2.0)
+α_range = (0.1, 5.0)
 Z = 100
 tmax = 2000
 tmin = 500
@@ -256,8 +260,10 @@ while valid_id < n_valid_target && attempt < max_attempts
                 S_eq = eq.S_eq,
                 L_eq = eq.L_eq,
                 C_eq = eq.C_eq,
+                maxTL_eq = eq.maxTL_eq,
                 A_eq = eq.A_eq,
                 B_eq = eq.B_eq,
+                TL_eq = eq.TL_eq,
 
                 # realised parameters
                 α_eq = eq.α_eq,
@@ -283,10 +289,13 @@ while valid_id < n_valid_target && attempt < max_attempts
             "Accepted $valid_id / $n_valid_target | ",
             "S_bin = ", S_bin.label,
             " | rep = ", target_counts[S_bin.label],
-            " | initial S = ", S,
-            " | initial C = ", round(C, digits = 3),
+           # " | initial S = ", S,
+           # " | initial C = ", round(C, digits = 3),
             " | S_eq = ", eq.S_eq,
-            " | C_eq = ", round(eq.C_eq, digits = 3)
+            " | C_eq = ", round(eq.C_eq, digits = 3),
+            " | maxTL_eq = ", round(eq.maxTL_eq, digits = 3),
+            " | Re_emp = ", round(eq.Re_emp_eq, digits = 3),
+            " | Re_ode = ", round(eq.Re_ode_eq, digits = 3)
         )
 
         if attempt % 100 == 0
@@ -313,6 +322,9 @@ while valid_id < n_valid_target && attempt < max_attempts
     end
 end
 
+# quick check
+valid_food_webs[1].Re_emp
+
 # ============================================================
 # Save full Julia output
 # ============================================================
@@ -332,7 +344,9 @@ jldsave(
 dep_rows = DataFrame[]
 
 for fw in valid_food_webs
-    S_eq = fw.S_eq
+    richness_eq = fw.S_eq
+    connectance_eq = fw.C_eq
+    maxTL_eq = fw.maxTL_eq
 
     # c_{consumer, resource} = α_consumer * ω_{consumer, resource}
     α_mat = reshape(fw.α_eq, :, 1)
@@ -349,7 +363,7 @@ for fw in valid_food_webs
     J_topdown = Float64[]
     J_bottomup = Float64[]
 
-    for consumer in 1:S_eq, resource in 1:S_eq
+    for consumer in 1:richness_eq, resource in 1:richness_eq
         if cij_eq[consumer, resource] > 0
             push!(prey_idx, resource)
             push!(predator_idx, consumer)
@@ -369,20 +383,35 @@ for fw in valid_food_webs
         end
     end
 
+    n_links = length(cij_value)
+
+    if n_links == 0
+        continue
+    end
+
     push!(
         dep_rows,
         DataFrame(
-            valid_id = fill(fw.valid_id, length(cij_value)),
-            S_label = fill(fw.S_label, length(cij_value)),
-            S_min = fill(fw.S_min, length(cij_value)),
-            S_max = fill(fw.S_max, length(cij_value)),
-            S_target = fill(fw.S_target, length(cij_value)),
-            rep = fill(fw.rep, length(cij_value)),
-            S_eq = fill(fw.S_eq, length(cij_value)),
-            L_eq = fill(fw.L_eq, length(cij_value)),
-            C_eq = fill(fw.C_eq, length(cij_value)),
-            Re_emp = fill(fw.Re_emp, length(cij_value)),
-            Re_ode = fill(fw.Re_ode, length(cij_value)),
+            valid_id = fill(fw.valid_id, n_links),
+
+            # realised richness-bin information
+            S_label = fill(fw.S_label, n_links),
+            S_min = fill(fw.S_min, n_links),
+            S_max = fill(fw.S_max, n_links),
+            S_target = fill(fw.S_target, n_links),
+            rep = fill(fw.rep, n_links),
+
+            # realised food-web summary
+            richness_eq = fill(richness_eq, n_links),
+            connectance_eq = fill(connectance_eq, n_links),
+            maxTL_eq = fill(maxTL_eq, n_links),
+            L_eq = fill(fw.L_eq, n_links),
+
+            # stability
+            Re_emp = fill(fw.Re_emp, n_links),
+            Re_ode = fill(fw.Re_ode, n_links),
+
+            # link-level data
             prey = prey_idx,
             predator = predator_idx,
             cij = cij_value,
@@ -399,3 +428,4 @@ end
 
 niche_foodwebs_df = vcat(dep_rows...)
 Arrow.write(feather_file, niche_foodwebs_df)
+
