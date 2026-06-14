@@ -1,5 +1,5 @@
 #============================================================
-# 2. Whole-network dependency randomisations for Lake Constance
+# 2. Whole-network dependency randomization for Lake Constance
 #============================================================
 
 rm(list = ls())
