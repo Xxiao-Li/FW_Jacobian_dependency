@@ -1,32 +1,32 @@
-
-ENDI = EcologicalNetworksDynamics.Internals
+const ENDI = EcologicalNetworksDynamics.Internals
 
 get_A(fw) = Matrix(fw.A)
 
-function random_linear_response_params(fw; α_range = (1.0, 10.0))
+function random_linear_response_params(fw; alpha_range = (1.0, 10.0), α_range = nothing)
+    if !isnothing(α_range)
+        alpha_range = α_range
+    end
+
     A = get_A(fw)
     S = size(A, 1)
 
-    α = zeros(Float64, S)
-    ω = zeros(Float64, S, S)
+    alpha = zeros(Float64, S)
+    omega = zeros(Float64, S, S)
 
-    α_dist = Uniform(α_range[1], α_range[2])
+    alpha_dist = Uniform(alpha_range[1], alpha_range[2])
 
     for consumer in 1:S
         prey_list = findall(A[consumer, :] .> 0)
 
-        # Only consumers receive feeding parameters
         if !isempty(prey_list)
-            # αᵢ ranges from 1 to 10
-            α[consumer] = rand(α_dist)
+            alpha[consumer] = rand(alpha_dist)
 
-            # 0 ≤ ωᵢⱼ ≤ 1 and sum_j ωᵢⱼ = 1 for the same consumer
-            raw_ω = rand(length(prey_list))
-            ω[consumer, prey_list] .= raw_ω ./ sum(raw_ω)
+            raw_omega = rand(length(prey_list))
+            omega[consumer, prey_list] .= raw_omega ./ sum(raw_omega)
         end
     end
 
-    return α, sparse(ω)
+    return alpha, sparse(omega)
 end
 
 function persistence(B; threshold = 1e-8)
@@ -37,8 +37,39 @@ function re_lmax(J)
     maximum(real.(eigvals(J)))
 end
 
+function prune_realised_species(A, alive, is_producer_original)
+    A_alive = A[alive, alive]
+    is_producer_alive = is_producer_original[alive]
 
-function jacobian_empirical(fw, B, α, ω, e)
+    keep_local = trues(length(alive))
+
+    while true
+        local_idx = findall(keep_local)
+        isempty(local_idx) && return Int[]
+
+        A_sub = A_alive[local_idx, local_idx]
+        is_producer_sub = is_producer_alive[local_idx]
+
+        has_prey = vec(sum(A_sub .> 0, dims = 2)) .> 0
+        has_predator = vec(sum(A_sub .> 0, dims = 1)) .> 0
+
+        # Basal producers must support at least one consumer.
+        # Consumers must retain at least one prey item.
+        retain_sub =
+            (is_producer_sub .& has_predator) .|
+            (.!is_producer_sub .& has_prey)
+
+        new_keep_local = falses(length(alive))
+        new_keep_local[local_idx[retain_sub]] .= true
+
+        new_keep_local == keep_local && break
+        keep_local = new_keep_local
+    end
+
+    return alive[findall(keep_local)]
+end
+
+function jacobian_empirical(fw, B, alpha, omega, e)
     A = get_A(fw)
     S = size(A, 1)
 
@@ -48,27 +79,19 @@ function jacobian_empirical(fw, B, α, ω, e)
         prey_list = findall(A[consumer, :] .> 0)
 
         for resource in prey_list
-            c = α[consumer] * ω[consumer, resource]
+            c = alpha[consumer] * omega[consumer, resource]
 
-            # Effect of consumer on resource
-            # J[resource, consumer] = -cᵢⱼ B_resource
             J[resource, consumer] += -c * B[resource]
-
-            # Effect of resource on consumer
-            # J[consumer, resource] = eᵢⱼ cᵢⱼ B_consumer
             J[consumer, resource] += e[consumer, resource] * c * B[consumer]
         end
     end
 
-    # Empirical Jacobian assumes no diagonal self-effects
-    for i in 1:S
-        J[i, i] = 0.0
-    end
+    J[diagind(J)] .= 0.0
 
     return J
 end
 
-function jacobian_ode(fw, B, α, ω, e, r, K, x)
+function jacobian_ode(fw, B, alpha, omega, e, r, K, x, is_producer)
     A = get_A(fw)
     S = size(A, 1)
 
@@ -78,128 +101,87 @@ function jacobian_ode(fw, B, α, ω, e, r, K, x)
         prey_list = findall(A[consumer, :] .> 0)
 
         for resource in prey_list
-            c = α[consumer] * ω[consumer, resource]
+            c = alpha[consumer] * omega[consumer, resource]
 
-            # ------------------------------------------------
             # Resource equation:
-            # dB_resource/dt includes -B_consumer * c * B_resource
-            # ------------------------------------------------
+            # dB_resource/dt includes -B_consumer * c * B_resource.
             J[resource, consumer] += -c * B[resource]
             J[resource, resource] += -c * B[consumer]
 
-            # ------------------------------------------------
             # Consumer equation:
-            # dB_consumer/dt includes +e * B_consumer * c * B_resource
-            # ------------------------------------------------
+            # dB_consumer/dt includes e * B_consumer * c * B_resource.
             J[consumer, resource] += e[consumer, resource] * c * B[consumer]
             J[consumer, consumer] += e[consumer, resource] * c * B[resource]
         end
     end
 
-    # Producer logistic growth:
-    # rᵢBᵢ(1 - Bᵢ/Kᵢ)
     for i in 1:S
-        is_consumer = any(A[i, :] .> 0)
-
-        if !is_consumer
+        if is_producer[i]
             J[i, i] += r[i] * (1 - 2 * B[i] / K[i])
         end
-    end
 
-    # Metabolism and mortality:
-    # -xᵢBᵢ - dᵢBᵢ
-    for i in 1:S
         J[i, i] += -x[i]
     end
 
     return J
 end
 
-
-function equilibrium_foodweb_summary(fw, B_final, α, ω, e, r, K, x;
+function equilibrium_foodweb_summary(fw, B_final, alpha, omega, e, r, K, x;
     extinction_threshold = 1e-8
 )
     A = get_A(fw)
-    S = size(A, 1)
 
-    # --------------------------------------------------------
-    # 1. Keep alive species first
-    # --------------------------------------------------------
+    # Producer identity must come from the original ODE model, not from the
+    # pruned realised web.
+    is_producer_original = vec(sum(A .> 0, dims = 2) .== 0)
 
     alive = findall(B_final .> extinction_threshold)
+    isempty(alive) && return nothing
 
-    if length(alive) == 0
-        return nothing
-    end
-
-    A_alive = A[alive, alive]
-
-    # --------------------------------------------------------
-    # 2. Remove disconnected species within the alive subweb
-    # A species is connected if it has at least one incoming or outgoing link
-    # --------------------------------------------------------
-
-    row_degree = vec(sum(A_alive .> 0, dims = 2))   # consumer links
-    col_degree = vec(sum(A_alive .> 0, dims = 1))   # prey links
-
-    connected_local = findall((row_degree .+ col_degree) .> 0)
-
-    if length(connected_local) == 0
-        return nothing
-    end
-
-    keep = alive[connected_local]
-
-    # --------------------------------------------------------
-    # 3. Subset equilibrium food web and parameters
-    # --------------------------------------------------------
+    keep = prune_realised_species(A, alive, is_producer_original)
+    isempty(keep) && return nothing
 
     A_eq = A[keep, keep]
+    L_eq = sum(A_eq .> 0)
+    L_eq == 0 && return nothing
 
     B_eq = B_final[keep]
 
-    α_eq = α[keep]
-    ω_eq = Matrix(ω)[keep, keep]
+    alpha_eq = alpha[keep]
+    omega_eq = Matrix(omega)[keep, keep]
 
     e_eq = e[keep, keep]
     r_eq = r[keep]
     K_eq = K[keep]
     x_eq = x[keep]
+    is_producer_eq = is_producer_original[keep]
 
     S_eq = length(keep)
-    L_eq = sum(A_eq .> 0)
     C_eq = L_eq / S_eq^2
 
-    TL_eq = ENDI.trophic_levels(A_eq) 
+    TL_eq = ENDI.trophic_levels(A_eq)
     maxTL_eq = maximum(TL_eq)
 
-    # --------------------------------------------------------
-    # 4. Build a new food web object for the realised subweb
-    # --------------------------------------------------------
-
     fw_eq = Foodweb(A_eq)
-
-    # --------------------------------------------------------
-    # 5. Calculate Jacobian matrices for the realised subweb
-    # --------------------------------------------------------
 
     J_emp_eq = jacobian_empirical(
         fw_eq,
         B_eq,
-        α_eq,
-        ω_eq,
+        alpha_eq,
+        omega_eq,
         e_eq
     )
 
     J_ode_eq = jacobian_ode(
         fw_eq,
         B_eq,
-        α_eq,
-        ω_eq,
+        alpha_eq,
+        omega_eq,
         e_eq,
         r_eq,
         K_eq,
-        x_eq
+        x_eq,
+        is_producer_eq
     )
 
     Re_emp_eq = re_lmax(J_emp_eq)
@@ -214,8 +196,11 @@ function equilibrium_foodweb_summary(fw, B_final, α, ω, e, r, K, x;
         A_eq = A_eq,
         B_eq = B_eq,
         TL_eq = TL_eq,
-        α_eq = α_eq,
-        ω_eq = sparse(ω_eq),
+        is_producer_eq = is_producer_eq,
+        alpha_eq = alpha_eq,
+        omega_eq = sparse(omega_eq),
+        α_eq = alpha_eq,
+        ω_eq = sparse(omega_eq),
         e_eq = e_eq,
         r_eq = r_eq,
         K_eq = K_eq,
@@ -223,6 +208,8 @@ function equilibrium_foodweb_summary(fw, B_final, α, ω, e, r, K, x;
         J_emp_eq = J_emp_eq,
         J_ode_eq = J_ode_eq,
         Re_emp_eq = Re_emp_eq,
-        Re_ode_eq = Re_ode_eq
+        Re_ode_eq = Re_ode_eq,
+        positive_diag_idx = findall(diag(J_ode_eq) .> 0),
+        positive_diag_values = diag(J_ode_eq)[findall(diag(J_ode_eq) .> 0)]
     )
 end
