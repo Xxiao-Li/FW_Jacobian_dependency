@@ -39,7 +39,7 @@ n_rep <- 1000
 # 2. Read biomass, efficiency, empirical stability
 #------------------------------------------------------------
 
-bio_eff_df <- read_csv(here("data", "biomass_stability_efficiency.csv"))
+bio_eff_df <- read_csv(here("data", "LC_fws", "biomass_stability_efficiency.csv"))
 
 # Biomass
 spe_biomass <- bio_eff_df %>%
@@ -94,7 +94,7 @@ fw_stability_LWmax <- bio_eff_df %>%
 # 3. Read flux data and convert to flux matrices
 #------------------------------------------------------------
 
-flux_df <- read_csv(here("data", "flux_IS.csv")) %>%
+flux_df <- read_csv(here("data", "LC_fws", "flux_IS.csv")) %>%
   select(Year, Phase, Prey, Predator, "Flux mg C m-2 d-1") %>%
   rename(Flux = "Flux mg C m-2 d-1") %>%
   mutate(
@@ -126,9 +126,9 @@ B_list <- B_list[web_ids]
 E_list <- E_list[web_ids]
 flux_mat_list <- flux_mat_list[web_ids]
 
-saveRDS(B_list, here("data", "B_list.rds"))
-saveRDS(E_list, here("data", "E_list.rds"))
-saveRDS(flux_mat_list, here("data", "flux_mat_list.rds"))
+saveRDS(B_list, here("data","LC_fws", "B_list.rds"))
+saveRDS(E_list, here("data","LC_fws", "E_list.rds"))
+saveRDS(flux_mat_list, here("data", "LC_fws","flux_mat_list.rds"))
 
 #------------------------------------------------------------
 # 4. Calculate feeding coefficients c_ij
@@ -486,7 +486,6 @@ randomisation_results <- map_dfr(web_ids, function(web_id) {
 #------------------------------------------------------------
 # 10. Compare randomisations with empirical food webs
 #------------------------------------------------------------
-
 # Mean and SD of randomised stability values per web and scenario
 scenario_summary_by_web <- randomisation_results %>%
   group_by(web_id, scenario) %>%
@@ -508,7 +507,7 @@ effect_size_results <- scenario_summary_by_web %>%
   ) %>%
   mutate(
     raw_effect = mean_Re - Re_emp,
-    standardised_effect = (Re_emp - mean_Re) / sd_Re
+    standardised_effect = (mean_Re - Re_emp) / sd_Re
   )
 
 # Interpretation:
@@ -661,17 +660,18 @@ scenario_levels <- c(
 
 scenario_labs <- c(
   full_dependency = "Full structural\ndependency",
-  c_dependency    = "Consumer-resource\nc dependency",
+  c_dependency    = "Interaction coefficient\nc dependency",
   B_dependency    = "Shared biomass\nB dependency",
   e_dependency    = "Shared efficiency\ne dependency",
   no_dependency   = "No dependency"
 )
 
-scenario_cols <- scico(
-  n = 5,
-  palette = "batlow",
-  begin = 0.1,
-  end = 0.9
+scenario_cols <- c(
+  full_dependency = "#1B9E77",
+  c_dependency    = "#7570B3",
+  B_dependency    = "#E6AB02",
+  e_dependency    = "#D95F02",
+  no_dependency   = "#666666"
 )
 
 names(scenario_cols) <- scenario_levels
@@ -757,12 +757,12 @@ p_time <- time_df %>%
     guide = "none"
   ) +
   guides(
-    color = guide_legend(nrow = 2, byrow = TRUE)
+    color = guide_legend(nrow = 1, byrow = TRUE)
   ) +
   labs(
     x = "Year",
     y = expression("Re("*lambda[max]*")"),
-    color = "Scenario"
+    color = ""
   ) +
   theme_bw(base_size = fs) +
   theme(
@@ -776,6 +776,7 @@ p_time <- time_df %>%
   )
 
 p_time
+
 # ------------------------------------------------------------------
 # Panel b: standardised effect size
 # ------------------------------------------------------------------
@@ -783,14 +784,18 @@ p_ses <- effect_size_results %>%
   mutate(
     scenario = factor(scenario, levels = scenario_levels)
   ) %>%
-  ggplot(aes(x = scenario, y = standardised_effect, fill = scenario)) +
+  ggplot(aes(x = scenario, y = standardised_effect, fill = scenario, colour = scenario)) +
   geom_hline(yintercept = 0, linetype = "dashed", linewidth = 0.4) +
-  geom_hline(yintercept = c(-2, 1), linetype = "dotted", alpha = 0.7) +
-  geom_boxplot(outlier.shape = NA, alpha = 0.8, width = 0.65) +
-  geom_point(position = position_jitter(width = 0.1),
-    size = 1.5, alpha = 0.35, color = "gray60", fill = "gray85" ) +
+  #geom_hline(yintercept = c(-2, 1), linetype = "dotted", alpha = 0.7) +
+  geom_boxplot(position = position_dodge(width = 0.82), width = 0.58,
+               alpha = 0.68, outlier.shape = NA, linewidth = 0.45) +
+  geom_point(position = position_jitterdodge(jitter.width = 0.12, dodge.width = 0.82),
+             alpha = 1, size = 1.4, stroke = 0) +
+  scale_fill_manual(values = scenario_cols, labels = scenario_labs) +
+  scale_colour_manual(values = scenario_cols, labels = scenario_labs) +
   scale_x_discrete(labels = scenario_labs) +
-  scale_fill_manual(values = scenario_cols, guide = "none") +
+  guides(colour = "none",
+         fill = "none") +
   labs(
     x = NULL,
     y = "Standardised effect size"
@@ -825,10 +830,10 @@ final_plot
 # ------------------------------------------------------------------
 
 ggsave(filename = here("figures", "LakeConstance_dependency.png"),
-  plot = final_plot, width = 10, height = 10, dpi = 600)
+  plot = final_plot, width = 12, height = 10, dpi = 600)
 
 ggsave(filename = here("figures", "LakeConstance_dependency.pdf"),
-  plot = final_plot, width = 10, height = 10)
+  plot = final_plot, width = 12, height = 10)
 
 
 # ------------------------------------------------------------------
