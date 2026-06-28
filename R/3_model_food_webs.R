@@ -1,33 +1,63 @@
 #============================================================
-# 3. Whole-network dependency randomization for niche modeled food webs
+# Whole-network dependency randomisation for niche-model food webs
 #============================================================
+
 rm(list = ls())
 
 library(tidyverse)
 library(here)
 library(arrow)
-library(purrr)
-library(lme4)
-library(lmerTest)
-library(emmeans)
-library(scico)
-library(colorspace)
 library(patchwork)
+library(broom)
 
 set.seed(2026)
+
+source(here("R/internal.R"))
 
 #------------------------------------------------------------
 # 1. Settings
 #------------------------------------------------------------
 
+out_dir <- here("data/model_fws/linear_response_sim")
+
+feather_file <- file.path(out_dir, "model_food_webs.feather")
+
+# Choose baseline stability:
+# "Re_emp"     = empirical-style Jacobian, diagonal = 0
+# "Re_intdiag" = off-diagonal trophic terms + interaction-derived diagonal only
+# "Re_ode"     = full ODE Jacobian, including interaction-derived and background diagonal
+
+# reference_type <- "Re_emp"
+reference_type <- "Re_intdiag"
+# reference_type <- "Re_ode"
+
+reference_label <- recode(
+  reference_type,
+  Re_emp     = "Re(emp)",
+  Re_intdiag = "Re(int. diag)",
+  Re_ode     = "Re(ode)"
+)
+
+reference_suffix <- paste0("_", reference_type)
+
+randomisation_rds <- file.path(
+  out_dir,
+  paste0("model_fw_dependency_randomisation", reference_suffix, ".rds")
+)
+
+fig_jpeg <- here("figures", paste0("model_fws_dependency_combined", reference_suffix, ".jpeg"))
+fig_pdf  <- here("figures", paste0("model_fws_dependency_combined", reference_suffix, ".pdf"))
+
 n_rep <- 1000
 
-scenarios <- c(
-  "full_dependency",
-  "c_dependency",
-  "B_dependency",
-  "e_dependency",
-  "no_dependency"
+S_label_levels <- c("6_10", "11_15", "16_20", "21_25", "26_30")
+
+S_label_labs <- c(
+  "6_10"  = "6–10",
+  "11_15" = "11–15",
+  "16_20" = "16–20",
+  "21_25" = "21–25",
+  "26_30" = "26–30"
 )
 
 scenario_levels <- c(
@@ -38,6 +68,16 @@ scenario_levels <- c(
   "no_dependency"
 )
 
+scenario_cols <- c(
+  full_dependency = "#1B9E77",
+  c_dependency    = "#7570B3",
+  B_dependency    = "#E6AB02",
+  e_dependency    = "#D95F02",
+  no_dependency   = "#666666"
+)
+
+scenario_cols_fill <- scales::alpha(scenario_cols, 0.25)
+
 scenario_labs <- c(
   full_dependency = "Full structural\ndependency",
   c_dependency    = "Interaction coefficient\nc dependency",
@@ -47,365 +87,163 @@ scenario_labs <- c(
 )
 
 #------------------------------------------------------------
-# 2. Read Feather file from Julia
+# 2. Read Julia output and rebuild webs
 #------------------------------------------------------------
 
-dep_df <- read_feather(
-  here(
-    "data/model_fws/linear_response_niche_webs",
-    "valid_food_webs_dependency_data.feather"
-  )
-)
-
-dep_df <- dep_df %>%
+modelfw_df <- read_feather(feather_file) %>%
   mutate(
     valid_id = as.character(valid_id),
-    S_label = factor(S_label, levels = c("low", "medium", "high"))
+    S_label = str_remove(as.character(S_label), "^S"),
+    S_label = factor(S_label, levels = S_label_levels)
   )
 
-# quick check
-glimpse(dep_df)
-
-#------------------------------------------------------------
-# 3. Basic helper functions
-#------------------------------------------------------------
-
-get_Re_lmax <- function(J) {
-  ev <- eigen(J, only.values = TRUE)$values
-  max(Re(ev))
-}
-
-rebuild_web_objects <- function(df) {
-  richness_eq <- unique(df$richness_eq)
-  stopifnot(length(richness_eq) == 1)
-  
-  n <- richness_eq
-  
-  C <- matrix(0, n, n)
-  J_emp <- matrix(0, n, n)
-  
-  B <- rep(NA_real_, n)
-  e_link <- matrix(0, n, n)
-  
-  # Rows in C are prey/resource, columns are predator/consumer
-  C[cbind(df$prey, df$predator)] <- df$cij
-  
-  # Rebuild biomass vector
-  B[df$prey] <- df$B_prey
-  B[df$predator] <- df$B_predator
-  
-  # Rebuild link-specific efficiency matrix
-  # Rows are prey/resource, columns are predator/consumer
-  e_link[cbind(df$prey, df$predator)] <- df$e
-  
-  # Rebuild J_emp from saved top-down and bottom-up terms
-  J_emp[cbind(df$prey, df$predator)] <- df$J_topdown
-  J_emp[cbind(df$predator, df$prey)] <- df$J_bottomup
-  
-  diag(J_emp) <- 0
-  
-  list(
-    C = C,
-    B = B,
-    e_link = e_link,
-    J_emp = J_emp
-  )
-}
-
-build_jacobian <- function(C, B, e_link) {
-  n <- length(B)
-  J <- matrix(0, n, n)
-  
-  links <- which(C > 0, arr.ind = TRUE)
-  
-  if (nrow(links) > 0) {
-    for (k in seq_len(nrow(links))) {
-      i <- links[k, 1]  # prey/resource
-      j <- links[k, 2]  # predator/consumer
-      
-      J[i, j] <- J[i, j] - C[i, j] * B[i]
-      J[j, i] <- J[j, i] + e_link[i, j] * C[i, j] * B[j]
-    }
-  }
-  
-  diag(J) <- 0
-  J
-}
-
-#------------------------------------------------------------
-# 4. Rebuild original food-web objects
-#------------------------------------------------------------
-
-web_objects <- dep_df %>%
+web_objects <- modelfw_df %>%
   group_by(valid_id) %>%
   group_split() %>%
   set_names(map_chr(., ~ unique(.x$valid_id))) %>%
   map(rebuild_web_objects)
 
-web_meta <- dep_df %>%
-  distinct(
-    valid_id,
-    S_label,
-    S_min,
-    S_max,
-    S_target,
-    rep,
-    richness_eq,
-    connectance_eq,
-    maxTL_eq,
-    L_eq,
-    Re_emp,
-    Re_ode
-  )
-
-#------------------------------------------------------------
-# 5. Validate rebuilt Jacobian against Julia J_emp
-#------------------------------------------------------------
-
-validation_results <- map_dfr(names(web_objects), function(id) {
+# Calculate intermediate reference:
+# Re_intdiag = stability of A + D_interaction
+# where A is the off-diagonal trophic matrix and D_interaction is the
+# interaction-derived diagonal only, without D_background.
+intdiag_reference <- map_dfr(names(web_objects), function(id) {
   obj <- web_objects[[id]]
   
-  J_rebuilt <- build_jacobian(
-    C = obj$C,
-    B = obj$B,
-    e_link = obj$e_link
+  interaction_diag_original <- get_interaction_diag_ode(
+    obj$C,
+    obj$B,
+    obj$e_link
   )
   
-  Re_rebuilt <- get_Re_lmax(J_rebuilt)
-  Re_saved <- web_meta$Re_emp[match(id, web_meta$valid_id)]
+  J_intdiag_original <- build_jacobian(
+    obj$C,
+    obj$B,
+    obj$e_link,
+    J_diag = interaction_diag_original
+  )
   
   tibble(
     valid_id = id,
-    Re_saved = Re_saved,
-    Re_rebuilt = Re_rebuilt,
-    diff_Re = Re_rebuilt - Re_saved,
-    max_abs_J_diff = max(abs(J_rebuilt - obj$J_emp), na.rm = TRUE)
+    Re_intdiag = get_Re_lmax(J_intdiag_original)
   )
 })
 
-summary(validation_results$diff_Re)
-summary(validation_results$max_abs_J_diff)
-
-validation_results
-
-#------------------------------------------------------------
-# 6. Parameter pools
-#------------------------------------------------------------
-
-get_parameter_pools <- function(C, B, e_link) {
-  list(
-    c_pool = as.numeric(C[C > 0]),
-    B_pool = as.numeric(B[B > 0]),
-    e_pool = as.numeric(e_link[e_link > 0])
+web_meta <- modelfw_df %>%
+  distinct(
+    valid_id, S_label, S_target, rep,
+    richness_eq, connectance_eq, maxTL_eq, L_eq,
+    Re_emp, Re_ode
+  ) %>%
+  left_join(intdiag_reference, by = "valid_id") %>%
+  mutate(
+    reference_Re = reference_type,
+    Re_reference = .data[[reference_type]]
   )
-}
-
-get_links <- function(C) {
-  links <- which(C > 0, arr.ind = TRUE)
-  
-  tibble(
-    prey = links[, 1],
-    predator = links[, 2]
-  )
-}
 
 #------------------------------------------------------------
-# 7. Dependency randomisation
+# 3. Validate rebuilt empirical, intdiag, and ODE-style Jacobians
 #------------------------------------------------------------
 
-randomise_params <- function(C, B, e_link, scenario) {
-  n <- length(B)
-  
-  pools <- get_parameter_pools(C, B, e_link)
-  links <- get_links(C)
-  
-  c_pool <- pools$c_pool
-  B_pool <- pools$B_pool
-  e_pool <- pools$e_pool
-  
-  if (length(c_pool) == 0) stop("c_pool is empty.")
-  if (length(B_pool) == 0) stop("B_pool is empty.")
-  if (length(e_pool) == 0) stop("e_pool is empty.")
-  
-  #----------------------------------------------------------
-  # Full dependency
-  # One c per trophic link, one B per species,
-  # and one e per realised trophic link.
-  #----------------------------------------------------------
-  if (scenario == "full_dependency") {
-    C_new <- matrix(0, n, n)
-    e_new <- matrix(0, n, n)
-    
-    for (k in seq_len(nrow(links))) {
-      i <- links$prey[k]
-      j <- links$predator[k]
-      
-      C_new[i, j] <- sample(c_pool, 1, replace = TRUE)
-      e_new[i, j] <- sample(e_pool, 1, replace = TRUE)
-    }
-    
-    B_new <- sample(B_pool, n, replace = TRUE)
-    
-    return(list(C = C_new, B = B_new, e_link = e_new))
-  }
-  
-  #----------------------------------------------------------
-  # c dependency only
-  # Same c_ij is reused in top-down and bottom-up terms.
-  # B and e are independently sampled.
-  #----------------------------------------------------------
-  if (scenario == "c_dependency") {
-    J <- matrix(0, n, n)
-    
-    for (k in seq_len(nrow(links))) {
-      i <- links$prey[k]
-      j <- links$predator[k]
-      
-      c_ij <- sample(c_pool, 1, replace = TRUE)
-      
-      B_topdown <- sample(B_pool, 1, replace = TRUE)
-      B_bottomup <- sample(B_pool, 1, replace = TRUE)
-      e_bottomup <- sample(e_pool, 1, replace = TRUE)
-      
-      J[i, j] <- J[i, j] - c_ij * B_topdown
-      J[j, i] <- J[j, i] + e_bottomup * c_ij * B_bottomup
-    }
-    
-    diag(J) <- 0
-    return(list(J = J))
-  }
-  
-  #----------------------------------------------------------
-  # B dependency only
-  # One biomass per species is reused.
-  # c and e are independently sampled for each occurrence.
-  #----------------------------------------------------------
-  if (scenario == "B_dependency") {
-    B_new <- sample(B_pool, n, replace = TRUE)
-    J <- matrix(0, n, n)
-    
-    for (k in seq_len(nrow(links))) {
-      i <- links$prey[k]
-      j <- links$predator[k]
-      
-      c_topdown <- sample(c_pool, 1, replace = TRUE)
-      c_bottomup <- sample(c_pool, 1, replace = TRUE)
-      e_bottomup <- sample(e_pool, 1, replace = TRUE)
-      
-      J[i, j] <- J[i, j] - c_topdown * B_new[i]
-      J[j, i] <- J[j, i] + e_bottomup * c_bottomup * B_new[j]
-    }
-    
-    diag(J) <- 0
-    return(list(J = J))
-  }
-  
-  #----------------------------------------------------------
-  # e dependency only
-  # One e value is reused per predator.
-  # This is closest to your Lake Constance logic,
-  # where one efficiency belongs to a consumer.
-  #----------------------------------------------------------
-  if (scenario == "e_dependency") {
-    predators <- sort(unique(links$predator))
-    
-    e_by_predator <- rep(0, n)
-    e_by_predator[predators] <- sample(
-      e_pool,
-      length(predators),
-      replace = TRUE
-    )
-    
-    J <- matrix(0, n, n)
-    
-    for (k in seq_len(nrow(links))) {
-      i <- links$prey[k]
-      j <- links$predator[k]
-      
-      c_topdown <- sample(c_pool, 1, replace = TRUE)
-      B_topdown <- sample(B_pool, 1, replace = TRUE)
-      
-      c_bottomup <- sample(c_pool, 1, replace = TRUE)
-      B_bottomup <- sample(B_pool, 1, replace = TRUE)
-      
-      J[i, j] <- J[i, j] - c_topdown * B_topdown
-      J[j, i] <- J[j, i] + e_by_predator[j] * c_bottomup * B_bottomup
-    }
-    
-    diag(J) <- 0
-    return(list(J = J))
-  }
-  
-  #----------------------------------------------------------
-  # No dependency
-  # Every occurrence of c, B, and e is independently sampled.
-  #----------------------------------------------------------
-  if (scenario == "no_dependency") {
-    J <- matrix(0, n, n)
-    
-    for (k in seq_len(nrow(links))) {
-      i <- links$prey[k]
-      j <- links$predator[k]
-      
-      c_topdown <- sample(c_pool, 1, replace = TRUE)
-      B_topdown <- sample(B_pool, 1, replace = TRUE)
-      
-      c_bottomup <- sample(c_pool, 1, replace = TRUE)
-      B_bottomup <- sample(B_pool, 1, replace = TRUE)
-      e_bottomup <- sample(e_pool, 1, replace = TRUE)
-      
-      J[i, j] <- J[i, j] - c_topdown * B_topdown
-      J[j, i] <- J[j, i] + e_bottomup * c_bottomup * B_bottomup
-    }
-    
-    diag(J) <- 0
-    return(list(J = J))
-  }
-  
-  stop("Unknown scenario: ", scenario)
-}
-
-compute_randomised_Re_lmax <- function(C, B, e_link, scenario) {
-  rand <- randomise_params(C, B, e_link, scenario)
-  
-  if (!is.null(rand$J)) {
-    return(get_Re_lmax(rand$J))
-  }
-  
-  J <- build_jacobian(
-    C = rand$C,
-    B = rand$B,
-    e_link = rand$e_link
-  )
-  
-  get_Re_lmax(J)
-}
-
-#------------------------------------------------------------
-# 8. Original results from saved J_emp
-#------------------------------------------------------------
-
-original_results <- map_dfr(names(web_objects), function(id) {
+validation_check <- map_dfr(names(web_objects), function(id) {
   obj <- web_objects[[id]]
   meta <- web_meta %>% filter(valid_id == id)
   
+  Re_emp_ref <- unique(meta$Re_emp)
+  Re_intdiag_ref <- unique(meta$Re_intdiag)
+  Re_ode_ref <- unique(meta$Re_ode)
+  
+  stopifnot(length(Re_emp_ref) == 1)
+  stopifnot(length(Re_intdiag_ref) == 1)
+  stopifnot(length(Re_ode_ref) == 1)
+  
+  # Empirical-style Jacobian: A only, diagonal = 0
+  J_emp_rebuilt <- build_jacobian(obj$C, obj$B, obj$e_link)
+  
+  # Interaction-derived diagonal only: A + D_interaction
+  interaction_diag_original <- get_interaction_diag_ode(
+    obj$C,
+    obj$B,
+    obj$e_link
+  )
+  
+  J_intdiag_rebuilt <- build_jacobian(
+    obj$C,
+    obj$B,
+    obj$e_link,
+    J_diag = interaction_diag_original
+  )
+  
+  diff_Re_ode <- NA_real_
+  min_J_ode_diag <- NA_real_
+  max_J_ode_diag <- NA_real_
+  max_abs_offdiag_diff <- NA_real_
+  
+  if (!is.null(obj$J_ode_diag)) {
+    J_ode_rebuilt <- build_jacobian(
+      obj$C,
+      obj$B,
+      obj$e_link,
+      J_diag = obj$J_ode_diag
+    )
+    
+    J_ode_off <- J_ode_rebuilt
+    diag(J_ode_off) <- 0
+    
+    max_abs_offdiag_diff <- max(abs(J_emp_rebuilt - J_ode_off), na.rm = TRUE)
+    
+    diff_Re_ode <- get_Re_lmax(J_ode_rebuilt) - as.numeric(Re_ode_ref)
+    min_J_ode_diag <- min(obj$J_ode_diag, na.rm = TRUE)
+    max_J_ode_diag <- max(obj$J_ode_diag, na.rm = TRUE)
+  }
+  
   tibble(
     valid_id = id,
-    S_label = meta$S_label,
-    S_target = meta$S_target,
-    richness_eq = meta$richness_eq,
-    connectance_eq = meta$connectance_eq,
-    maxTL_eq = meta$maxTL_eq,
-    L_eq = meta$L_eq,
-    Re_original = get_Re_lmax(obj$J_emp),
-    Re_emp_saved = meta$Re_emp,
-    Re_ode = meta$Re_ode
+    diff_Re_emp = get_Re_lmax(J_emp_rebuilt) - as.numeric(Re_emp_ref),
+    diff_Re_intdiag = get_Re_lmax(J_intdiag_rebuilt) - as.numeric(Re_intdiag_ref),
+    max_abs_J_emp_diff = max(abs(J_emp_rebuilt - obj$J_emp), na.rm = TRUE),
+    max_abs_offdiag_diff = max_abs_offdiag_diff,
+    diff_Re_ode = diff_Re_ode,
+    min_J_ode_diag = min_J_ode_diag,
+    max_J_ode_diag = max_J_ode_diag
   )
 })
 
+print(max(abs(validation_check$diff_Re_emp), na.rm = TRUE))
+print(max(abs(validation_check$diff_Re_intdiag), na.rm = TRUE))
+print(max(validation_check$max_abs_J_emp_diff, na.rm = TRUE))
+print(max(validation_check$max_abs_offdiag_diff, na.rm = TRUE))
+print(max(abs(validation_check$diff_Re_ode), na.rm = TRUE))
+
+summary(validation_check$diff_Re_emp)
+summary(validation_check$diff_Re_intdiag)
+summary(validation_check$diff_Re_ode)
+summary(validation_check$max_abs_offdiag_diff)
+
 #------------------------------------------------------------
-# 9. Randomisation loop
+# 4. Reference stability table
 #------------------------------------------------------------
+
+reference_results <- web_meta %>%
+  select(
+    valid_id, S_label, S_target,
+    richness_eq, connectance_eq, maxTL_eq, L_eq,
+    reference_Re, Re_reference, Re_emp, Re_intdiag, Re_ode
+  )
+
+#------------------------------------------------------------
+# 5. Randomisation
+#------------------------------------------------------------
+# Important:
+# Re_emp:
+#   J_rand = A_rand, diagonal = 0
+#
+# Re_intdiag:
+#   J_rand = A_rand + D_interaction_rand
+#   background diagonal removed
+#
+# Re_ode:
+#   J_rand = A_rand + D_interaction_rand + D_background
 
 randomisation_results <- map_dfr(names(web_objects), function(id) {
   message("Running web: ", id)
@@ -413,198 +251,524 @@ randomisation_results <- map_dfr(names(web_objects), function(id) {
   obj <- web_objects[[id]]
   meta <- web_meta %>% filter(valid_id == id)
   
-  map_dfr(scenarios, function(scen) {
-    message("  Scenario: ", scen)
+  if (identical(reference_type, "Re_emp")) {
     
-    tibble(rep = seq_len(n_rep)) %>%
-      mutate(
-        valid_id = id,
-        S_label = meta$S_label,
-        S_target = meta$S_target,
-        richness_eq = meta$richness_eq,
-        connectance_eq = meta$connectance_eq,
-        maxTL_eq = meta$maxTL_eq,
-        L_eq = meta$L_eq,
-        scenario = scen,
-        Re_lmax = map_dbl(
-          rep,
-          ~ compute_randomised_Re_lmax(
-            C = obj$C,
-            B = obj$B,
-            e_link = obj$e_link,
-            scenario = scen
+    background_diag <- NULL
+    
+  } else if (identical(reference_type, "Re_intdiag")) {
+    
+    if (is.null(obj$J_ode_diag)) {
+      stop("J_ode_diag is missing. Update the Feather file before running Re_intdiag.")
+    }
+    
+    # Remove D_background.
+    # compute_randomised_Re_lmax_ode() will still add D_interaction_rand.
+    background_diag <- rep(0, length(obj$J_ode_diag))
+    
+  } else if (identical(reference_type, "Re_ode")) {
+    
+    if (is.null(obj$J_ode_diag)) {
+      stop("J_ode_diag is missing. Update the Feather file before running Re_ode.")
+    }
+    
+    interaction_diag_original <- get_interaction_diag_ode(
+      obj$C,
+      obj$B,
+      obj$e_link
+    )
+    
+    background_diag <- obj$J_ode_diag - interaction_diag_original
+    
+  } else {
+    stop("Unknown reference_type: ", reference_type)
+  }
+  
+  map_dfr(scenario_levels, function(scen) {
+    tibble(
+      rep = seq_len(n_rep),
+      valid_id = id,
+      S_label = meta$S_label,
+      S_target = meta$S_target,
+      richness_eq = meta$richness_eq,
+      connectance_eq = meta$connectance_eq,
+      maxTL_eq = meta$maxTL_eq,
+      L_eq = meta$L_eq,
+      reference_Re = reference_type,
+      scenario = scen,
+      Re_lmax = map_dbl(
+        seq_len(n_rep),
+        ~ if (identical(reference_type, "Re_emp")) {
+          compute_randomised_Re_lmax(
+            obj$C,
+            obj$B,
+            obj$e_link,
+            scen
           )
-        )
+        } else {
+          compute_randomised_Re_lmax_ode(
+            obj$C,
+            obj$B,
+            obj$e_link,
+            scen,
+            background_diag
+          )
+        }
       )
+    )
   })
-})
+}) %>%
+  mutate(
+    scenario = factor(scenario, levels = scenario_levels),
+    S_label = factor(S_label, levels = S_label_levels)
+  )
 
-saveRDS(
-  randomisation_results,
-  here("data/model_fws/linear_response_niche_webs",
-       "niche_dependency_randomisation_results.rds")
-)
+saveRDS(randomisation_results, randomisation_rds)
 
 #------------------------------------------------------------
-# 10. Summarise randomisation results
+# 6. Calculate web-level SES deviations
 #------------------------------------------------------------
+
+rep_check <- randomisation_results %>%
+  count(valid_id, scenario, name = "n_realisations")
+
+print(summary(rep_check$n_realisations))
+
+rep_check %>%
+  count(n_realisations) %>%
+  print()
+
+rep_check %>%
+  filter(n_realisations != n_rep) %>%
+  print()
 
 scenario_summary_by_web <- randomisation_results %>%
   group_by(
-    valid_id,
-    S_label,
-    S_target,
-    richness_eq,
-    connectance_eq,
-    maxTL_eq,
-    L_eq,
+    valid_id, S_label, S_target,
+    richness_eq, connectance_eq, maxTL_eq, L_eq,
     scenario
   ) %>%
   summarise(
     mean_Re = mean(Re_lmax, na.rm = TRUE),
-    sd_Re = sd(Re_lmax, na.rm = TRUE),
-    median_Re = median(Re_lmax, na.rm = TRUE),
-    q025_Re = quantile(Re_lmax, 0.025, na.rm = TRUE),
-    q975_Re = quantile(Re_lmax, 0.975, na.rm = TRUE),
+    sd_Re = safe_sd(Re_lmax),
     .groups = "drop"
   ) %>%
-  mutate(
-    scenario = factor(scenario, levels = scenario_levels)
-  )
-
-effect_size_results <- scenario_summary_by_web %>%
   left_join(
-    original_results %>%
-      select(valid_id, Re_original),
+    web_meta %>%
+      select(valid_id, reference_Re, Re_reference, Re_emp, Re_intdiag, Re_ode),
     by = "valid_id"
-  ) %>%
+  )
+
+analysis_df <- scenario_summary_by_web %>%
   mutate(
-    raw_effect = mean_Re - Re_original,
-    standardised_effect = (Re_original - mean_Re) / sd_Re
-  )
-
-# raw_effect > 0:
-#   randomised matrices have higher Re(lambda_max) than the original web.
-#
-# standardised_effect < 0:
-#   original web has lower Re(lambda_max) than the randomised null expectation.
-
-#------------------------------------------------------------
-# 11. Summary statistics
-#------------------------------------------------------------
-
-original_stats <- original_results %>%
-  summarise(
-    n_web = n(),
-    median_Re_original = median(Re_original, na.rm = TRUE),
-    q25_Re_original = quantile(Re_original, 0.25, na.rm = TRUE),
-    q75_Re_original = quantile(Re_original, 0.75, na.rm = TRUE),
-    mean_Re_original = mean(Re_original, na.rm = TRUE),
-    sd_Re_original = sd(Re_original, na.rm = TRUE)
-  )
-
-rand_stats <- scenario_summary_by_web %>%
-  group_by(scenario) %>%
-  summarise(
-    n_web = n(),
-    median_Re = median(mean_Re, na.rm = TRUE),
-    q25_Re = quantile(mean_Re, 0.25, na.rm = TRUE),
-    q75_Re = quantile(mean_Re, 0.75, na.rm = TRUE),
-    mean_Re = mean(mean_Re, na.rm = TRUE),
-    sd_Re = sd(mean_Re, na.rm = TRUE),
-    .groups = "drop"
-  )
-
-ses_stats <- effect_size_results %>%
-  group_by(scenario) %>%
-  summarise(
-    n_web = n(),
-    median_SES = median(standardised_effect, na.rm = TRUE),
-    q25_SES = quantile(standardised_effect, 0.25, na.rm = TRUE),
-    q75_SES = quantile(standardised_effect, 0.75, na.rm = TRUE),
-    mean_SES = mean(standardised_effect, na.rm = TRUE),
-    sd_SES = sd(standardised_effect, na.rm = TRUE),
-    prop_negative = mean(standardised_effect < 0, na.rm = TRUE),
-    prop_below_minus2 = mean(standardised_effect < -2, na.rm = TRUE),
-    .groups = "drop"
-  )
-
-effect_tests <- effect_size_results %>%
-  group_by(scenario) %>%
-  summarise(
-    n_web = n(),
-    mean_raw_effect = mean(raw_effect, na.rm = TRUE),
-    median_raw_effect = median(raw_effect, na.rm = TRUE),
-    sd_raw_effect = sd(raw_effect, na.rm = TRUE),
-    t_test_p = t.test(raw_effect, mu = 0)$p.value,
-    wilcox_p = wilcox.test(raw_effect, mu = 0)$p.value,
-    mean_standardised_effect = mean(standardised_effect, na.rm = TRUE),
-    median_standardised_effect = median(standardised_effect, na.rm = TRUE),
-    .groups = "drop"
-  )
-
-original_stats
-rand_stats
-ses_stats
-effect_tests
-
-#------------------------------------------------------------
-# 12. Scenario comparison
-#------------------------------------------------------------
-
-scenario_means <- randomisation_results %>%
-  group_by(
-    valid_id,
-    S_label,
-    S_target,
-    richness_eq,
-    connectance_eq,
-    maxTL_eq,
-    scenario
-  ) %>%
-  summarise(
-    mean_Re = mean(Re_lmax, na.rm = TRUE),
-    .groups = "drop"
-  ) %>%
-  mutate(
+    raw_deviation_from_reference = mean_Re - Re_reference,
+    
+    # Panel A:
+    # scenario-specific SES deviation from reference stability
+    ses_deviation_from_reference =
+      raw_deviation_from_reference / sd_Re,
+    
+    z_log_richness = make_z(log(richness_eq)),
+    z_log_connectance = make_z(log(connectance_eq)),
+    z_maxTL = make_z(maxTL_eq),
+    
     scenario = factor(scenario, levels = scenario_levels),
-    log_richness = log(richness_eq),
-    log_connectance = log(connectance_eq)
+    S_label = factor(S_label, levels = S_label_levels)
+  ) %>%
+  filter(
+    is.finite(ses_deviation_from_reference),
+    is.finite(z_log_richness),
+    is.finite(z_log_connectance),
+    is.finite(z_maxTL)
   )
 
-# Simple mixed model
-lmm_fit <- lmer(
-  mean_Re ~ scenario + log_richness + log_connectance + maxTL_eq + (1 | valid_id),
-  data = scenario_means
+# Optional check for very small SDs
+scenario_summary_by_web %>%
+  group_by(scenario) %>%
+  summarise(
+    min_sd_Re = min(sd_Re, na.rm = TRUE),
+    median_sd_Re = median(sd_Re, na.rm = TRUE),
+    n_zero_sd = sum(sd_Re == 0, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  print()
+
+#------------------------------------------------------------
+# 7. Main analysis: stabilising effect of full dependency
+#------------------------------------------------------------
+# For panels B-D and the LM:
+#
+#   full_dependency_effect =
+#     (mean_Re(no_dependency) - mean_Re(full_dependency)) /
+#     sd_Re(no_dependency)
+#
+# Positive values mean that removing dependency increases Re(lambda_max),
+# so full dependency is stabilising.
+
+full_dep_df <- scenario_summary_by_web %>%
+  filter(scenario %in% c("full_dependency", "no_dependency")) %>%
+  mutate(
+    z_log_richness = make_z(log(richness_eq)),
+    z_log_connectance = make_z(log(connectance_eq)),
+    z_maxTL = make_z(maxTL_eq)
+  ) %>%
+  select(
+    valid_id, scenario, mean_Re, sd_Re,
+    richness_eq, connectance_eq, maxTL_eq,
+    z_log_richness, z_log_connectance, z_maxTL
+  ) %>%
+  pivot_wider(
+    names_from = scenario,
+    values_from = c(mean_Re, sd_Re)
+  ) %>%
+  mutate(
+    full_dependency_effect_raw =
+      mean_Re_no_dependency - mean_Re_full_dependency,
+    
+    full_dependency_effect =
+      full_dependency_effect_raw / sd_Re_no_dependency
+  ) %>%
+  filter(
+    is.finite(full_dependency_effect),
+    is.finite(z_log_richness),
+    is.finite(z_log_connectance),
+    is.finite(z_maxTL)
+  )
+
+full_dep_lm <- lm(
+  full_dependency_effect ~ z_log_richness + z_log_connectance + z_maxTL,
+  data = full_dep_df
 )
 
-summary(lmm_fit)
-anova(lmm_fit)
+summary(full_dep_lm)
+anova(full_dep_lm)
 
-emm <- emmeans(lmm_fit, ~ scenario)
+effect_table <- tidy(full_dep_lm, conf.int = TRUE) %>%
+  filter(term != "(Intercept)") %>%
+  mutate(
+    predictor = recode(
+      term,
+      z_log_richness = "Log richness",
+      z_log_connectance = "Log connectance",
+      z_maxTL = "Maximum trophic level"
+    )
+  ) %>%
+  select(predictor, estimate, conf.low, conf.high, p.value)
 
-pairwise_scenario_comparisons <- pairs(
-  emm,
-  adjust = "tukey"
+model_r2 <- tibble(
+  r_squared = summary(full_dep_lm)$r.squared,
+  adj_r_squared = summary(full_dep_lm)$adj.r.squared
 )
 
-pairwise_df <- as.data.frame(pairwise_scenario_comparisons)
+print(effect_table)
+print(model_r2)
 
-pairwise_df
+#------------------------------------------------------------
+# 8. Model-adjusted predictions
+#------------------------------------------------------------
 
-# Contrasts against no dependency
-contrasts_vs_no <- contrast(
-  emm,
-  method = list(
-    "full_dependency - no_dependency" = c(1, 0, 0, 0, -1),
-    "c_dependency - no_dependency" = c(0, 1, 0, 0, -1),
-    "B_dependency - no_dependency" = c(0, 0, 1, 0, -1),
-    "e_dependency - no_dependency" = c(0, 0, 0, 1, -1)
+make_prediction_df <- function(model, data, focal_var, label) {
+  pred_df <- tibble(
+    z_log_richness = 0,
+    z_log_connectance = 0,
+    z_maxTL = 0
+  )
+  
+  focal_seq <- seq(
+    min(data[[focal_var]], na.rm = TRUE),
+    max(data[[focal_var]], na.rm = TRUE),
+    length.out = 100
+  )
+  
+  pred_df <- pred_df[rep(1, length(focal_seq)), ]
+  pred_df[[focal_var]] <- focal_seq
+  
+  pred <- predict(model, newdata = pred_df, se.fit = TRUE)
+  
+  pred_df %>%
+    mutate(
+      x = .data[[focal_var]],
+      fit = pred$fit,
+      se = pred$se.fit,
+      lower = fit - 1.96 * se,
+      upper = fit + 1.96 * se,
+      complexity = label
+    )
+}
+
+pred_richness <- make_prediction_df(
+  full_dep_lm,
+  full_dep_df,
+  "z_log_richness",
+  "Richness"
+)
+
+pred_connectance <- make_prediction_df(
+  full_dep_lm,
+  full_dep_df,
+  "z_log_connectance",
+  "Connectance"
+)
+
+pred_maxTL <- make_prediction_df(
+  full_dep_lm,
+  full_dep_df,
+  "z_maxTL",
+  "Max trophic level"
+)
+
+slope_labs <- tidy(full_dep_lm, conf.int = TRUE) %>%
+  filter(term %in% c("z_log_richness", "z_log_connectance", "z_maxTL")) %>%
+  mutate(
+    label = paste0(
+      "β = ", sprintf("%.2f", estimate),
+      "\n95% CI [", sprintf("%.2f", conf.low), ", ",
+      sprintf("%.2f", conf.high), "]"
+    )
+  )
+
+full_dep_ylim <- range(
+  c(
+    full_dep_df$full_dependency_effect,
+    pred_richness$lower, pred_richness$upper,
+    pred_connectance$lower, pred_connectance$upper,
+    pred_maxTL$lower, pred_maxTL$upper
   ),
-  adjust = "holm"
+  na.rm = TRUE
 )
 
-contrasts_vs_no_df <- as.data.frame(contrasts_vs_no)
+full_dep_ylim <- full_dep_ylim + c(-0.05, 0.05) * diff(full_dep_ylim)
 
-contrasts_vs_no_df
+#------------------------------------------------------------
+# 9. Combined figure
+#------------------------------------------------------------
+
+theme_dep <- function(base_size = 15) {
+  theme_classic(base_size = base_size) +
+    theme(
+      axis.text = element_text(colour = "black", size = base_size - 2),
+      axis.title = element_text(colour = "black", size = base_size),
+      axis.line = element_line(linewidth = 0.45),
+      axis.ticks = element_line(linewidth = 0.45),
+      legend.position = "bottom",
+      legend.title = element_blank(),
+      legend.text = element_text(size = base_size - 2),
+      plot.tag = element_text(face = "bold", size = base_size, colour = "black")
+    )
+}
+
+plot_df <- analysis_df %>%
+  filter(!is.na(S_label), is.finite(ses_deviation_from_reference))
+
+p_box <- ggplot(
+  plot_df,
+  aes(S_label, ses_deviation_from_reference, fill = scenario, colour = scenario)
+) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "grey45") +
+  geom_boxplot(
+    position = position_dodge(0.82),
+    width = 0.58,
+    alpha = 0.58,
+    outlier.shape = NA
+  ) +
+  geom_point(
+    position = position_jitterdodge(jitter.width = 0.12, dodge.width = 0.82),
+    alpha = 1,
+    size = 1.5,
+    stroke = 0
+  ) +
+  scale_fill_manual(values = scenario_cols_fill, labels = scenario_labs) +
+  scale_colour_manual(values = scenario_cols, labels = scenario_labs) +
+  scale_x_discrete(labels = S_label_labs) +
+  labs(
+    x = "Richness bin",
+    y = paste0(
+      "Scenario-specific SES deviation from\n",
+      reference_label,
+      " stability"
+    )
+  ) +
+  guides(colour = "none", fill = guide_legend(nrow = 1)) +
+  theme_dep(base_size = 20)
+
+plot_complexity <- function(data, pred, xvar, xlab, term, show_y = FALSE) {
+  lab_df <- slope_labs %>%
+    filter(term == !!term) %>%
+    mutate(
+      x = min(data[[xvar]], na.rm = TRUE),
+      y = full_dep_ylim[2]
+    )
+  
+  ggplot(data, aes(.data[[xvar]], full_dependency_effect)) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "grey45") +
+    geom_point(size = 1.7, alpha = 0.7, colour = "grey35") +
+    geom_ribbon(
+      data = pred,
+      aes(x = x, ymin = lower, ymax = upper),
+      inherit.aes = FALSE,
+      alpha = 0.22
+    ) +
+    geom_line(
+      data = pred,
+      aes(x = x, y = fit),
+      inherit.aes = FALSE,
+      linewidth = 0.9
+    ) +
+    geom_text(
+      data = lab_df,
+      aes(x = x, y = y, label = label),
+      inherit.aes = FALSE,
+      hjust = 0,
+      vjust = 1,
+      size = 5
+    ) +
+    coord_cartesian(ylim = full_dep_ylim) +
+    labs(
+      x = xlab,
+      y = ifelse(
+        show_y,
+        "Standardised stabilising effect\nof full dependency",
+        ""
+      )
+    ) +
+    theme_dep(base_size = 20) +
+    theme(legend.position = "none")
+}
+
+p_richness <- plot_complexity(
+  full_dep_df,
+  pred_richness,
+  "z_log_richness",
+  "Log richness,\nstandardised",
+  "z_log_richness",
+  TRUE
+)
+
+p_connectance <- plot_complexity(
+  full_dep_df,
+  pred_connectance,
+  "z_log_connectance",
+  "Log connectance,\nstandardised",
+  "z_log_connectance"
+)
+
+p_maxTL <- plot_complexity(
+  full_dep_df,
+  pred_maxTL,
+  "z_maxTL",
+  "Max. trophic level,\nstandardised",
+  "z_maxTL"
+)
+
+main_plot <- (p_box / (p_richness | p_connectance | p_maxTL)) +
+  plot_layout(heights = c(1.15, 1)) +
+  plot_annotation(tag_levels = "a", tag_prefix = "(", tag_suffix = ")") &
+  theme(plot.tag = element_text(face = "bold", size = 20))
+
+main_plot
+
+ggsave(fig_jpeg, main_plot, width = 14, height = 11, dpi = 600)
+ggsave(fig_pdf, main_plot, width = 14, height = 11)
+
+
+#------------------------------------------------------------
+# 10. Alternative combined figure: partial residual plots for B-D
+#------------------------------------------------------------
+
+fig_jpeg_partial <- here("figures", paste0("model_fws_dependency_combined_partial", reference_suffix, ".jpeg"))
+fig_pdf_partial  <- here("figures", paste0("model_fws_dependency_combined_partial", reference_suffix, ".pdf"))
+
+make_partial_plot <- function(data, model, xvar, xlab, term, show_y = FALSE) {
+  beta_df <- tidy(model, conf.int = TRUE) %>% filter(term == !!term)
+  beta <- beta_df$estimate
+  
+  plot_df <- data %>%
+    mutate(
+      x = .data[[xvar]],
+      partial_effect = residuals(model) + beta * .data[[xvar]]
+    )
+  
+  line_df <- tibble(
+    x = seq(min(plot_df$x, na.rm = TRUE), max(plot_df$x, na.rm = TRUE), length.out = 100)
+  ) %>%
+    mutate(
+      fit = beta_df$estimate * x,
+      lower_raw = beta_df$conf.low * x,
+      upper_raw = beta_df$conf.high * x,
+      lower = pmin(lower_raw, upper_raw),
+      upper = pmax(lower_raw, upper_raw)
+    )
+  
+  lab_df <- slope_labs %>%
+    filter(term == !!term) %>%
+    mutate(
+      x = min(plot_df$x, na.rm = TRUE),
+      y = max(c(plot_df$partial_effect, line_df$upper), na.rm = TRUE)
+    )
+  
+  ggplot(plot_df, aes(x, partial_effect)) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "grey45") +
+    geom_point(size = 1.7, alpha = 0.7, colour = "grey35") +
+    geom_ribbon(
+      data = line_df,
+      aes(x = x, ymin = lower, ymax = upper),
+      inherit.aes = FALSE,
+      alpha = 0.22
+    ) +
+    geom_line(
+      data = line_df,
+      aes(x = x, y = fit),
+      inherit.aes = FALSE,
+      linewidth = 0.9
+    ) +
+    geom_text(
+      data = lab_df,
+      aes(x = x, y = y, label = label),
+      inherit.aes = FALSE,
+      hjust = 0,
+      vjust = 1,
+      size = 5
+    ) +
+    labs(
+      x = xlab,
+      y = ifelse(
+        show_y,
+        "Partial effect on standardised\nstabilising effect",
+        ""
+      )
+    ) +
+    theme_dep(base_size = 20) +
+    theme(legend.position = "none")
+}
+
+p_richness_partial <- make_partial_plot(
+  full_dep_df, full_dep_lm,
+  "z_log_richness",
+  "Log richness,\nstandardised",
+  "z_log_richness",
+  TRUE
+)
+
+p_connectance_partial <- make_partial_plot(
+  full_dep_df, full_dep_lm,
+  "z_log_connectance",
+  "Log connectance,\nstandardised",
+  "z_log_connectance"
+)
+
+p_maxTL_partial <- make_partial_plot(
+  full_dep_df, full_dep_lm,
+  "z_maxTL",
+  "Max. trophic level,\nstandardised",
+  "z_maxTL"
+)
+
+main_plot_partial <- (p_box / (p_richness_partial | p_connectance_partial | p_maxTL_partial)) +
+  plot_layout(heights = c(1.15, 1)) +
+  plot_annotation(tag_levels = "a", tag_prefix = "(", tag_suffix = ")") &
+  theme(plot.tag = element_text(face = "bold", size = 20))
+
+main_plot_partial
+
+ggsave(fig_jpeg_partial, main_plot_partial, width = 14, height = 11, dpi = 600)
+ggsave(fig_pdf_partial, main_plot_partial, width = 14, height = 11)
 
