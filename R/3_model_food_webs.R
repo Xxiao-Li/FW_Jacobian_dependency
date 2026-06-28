@@ -9,6 +9,13 @@ library(here)
 library(arrow)
 library(patchwork)
 library(broom)
+library(lme4)
+library(emmeans)
+library(multcomp)
+library(scales)
+
+select <- dplyr::select
+filter <- dplyr::filter
 
 set.seed(2026)
 
@@ -28,7 +35,7 @@ feather_file <- file.path(out_dir, "model_food_webs.feather")
 # "Re_ode"     = full ODE Jacobian, including interaction-derived and background diagonal
 
 # reference_type <- "Re_emp"
-reference_type <- "Re_intdiag"
+ reference_type <- "Re_intdiag"
 # reference_type <- "Re_ode"
 
 reference_label <- recode(
@@ -324,6 +331,8 @@ randomisation_results <- map_dfr(names(web_objects), function(id) {
 
 saveRDS(randomisation_results, randomisation_rds)
 
+randomisation_results <- readRDS(randomisation_rds)
+
 #------------------------------------------------------------
 # 6. Calculate web-level SES deviations
 #------------------------------------------------------------
@@ -354,7 +363,7 @@ scenario_summary_by_web <- randomisation_results %>%
   ) %>%
   left_join(
     web_meta %>%
-      select(valid_id, reference_Re, Re_reference, Re_emp, Re_intdiag, Re_ode),
+      dplyr::select(valid_id, reference_Re, Re_reference, Re_emp, Re_intdiag, Re_ode),
     by = "valid_id"
   )
 
@@ -465,7 +474,6 @@ print(model_r2)
 #------------------------------------------------------------
 # 8. Model-adjusted predictions
 #------------------------------------------------------------
-
 make_prediction_df <- function(model, data, focal_var, label) {
   pred_df <- tibble(
     z_log_richness = 0,
@@ -541,7 +549,6 @@ full_dep_ylim <- full_dep_ylim + c(-0.05, 0.05) * diff(full_dep_ylim)
 #------------------------------------------------------------
 # 9. Combined figure
 #------------------------------------------------------------
-
 theme_dep <- function(base_size = 15) {
   theme_classic(base_size = base_size) +
     theme(
@@ -557,7 +564,73 @@ theme_dep <- function(base_size = 15) {
 }
 
 plot_df <- analysis_df %>%
-  filter(!is.na(S_label), is.finite(ses_deviation_from_reference))
+  filter(!is.na(S_label), is.finite(ses_deviation_from_reference)) %>%
+  mutate(
+    scenario = factor(scenario, levels = scenario_levels),
+    S_label = factor(S_label, levels = S_label_levels)
+  )
+
+#------------------------------------------------------------
+# Pairwise comparisons among scenarios within each richness bin
+#------------------------------------------------------------
+mod_letters <- lmer(
+  ses_deviation_from_reference ~ S_label * scenario + (1 | valid_id),
+  data = plot_df
+)
+
+emm_scen <- emmeans(
+  mod_letters,
+  specs = ~ scenario,
+  by = "S_label"
+)
+
+pairwise_scen <- contrast(
+  emm_scen,
+  method = "pairwise",
+  by = "S_label",
+  adjust = "tukey"
+)
+
+print(pairwise_scen)
+
+scenario_letters <- multcomp::cld(
+  emm_scen,
+  by = "S_label",
+  adjust = "tukey",
+  Letters = letters
+) %>%
+  as.data.frame() %>%
+  tibble::as_tibble() %>%
+  mutate(
+    .group = gsub(" ", "", .group),
+    scenario = factor(scenario, levels = scenario_levels),
+    S_label = factor(S_label, levels = S_label_levels)
+  )
+
+letter_pos <- plot_df %>%
+  group_by(S_label, scenario) %>%
+  summarise(
+    y = quantile(ses_deviation_from_reference, 0.98, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  group_by(S_label) %>%
+  mutate(
+    y = y + 0.25 * diff(range(plot_df$ses_deviation_from_reference, na.rm = TRUE))
+  ) %>%
+  ungroup()
+
+scenario_letters <- scenario_letters %>%
+  left_join(letter_pos, by = c("S_label", "scenario"))
+
+scenario_letters %>%
+  dplyr::select(
+    dplyr::any_of(c(
+      "S_label", "scenario", "emmean", "SE", "df",
+      "lower.CL", "upper.CL", "asymp.LCL", "asymp.UCL", ".group"
+    ))
+  ) %>%
+  tibble::as_tibble() %>%
+  print(n = Inf)
 
 p_box <- ggplot(
   plot_df,
@@ -576,9 +649,28 @@ p_box <- ggplot(
     size = 1.5,
     stroke = 0
   ) +
+  geom_text(
+    data = scenario_letters,
+    aes(
+      x = S_label,
+      y = y,
+      label = .group,
+      group = scenario
+    ),
+    position = position_dodge(width = 0.82),
+    inherit.aes = FALSE,
+    colour = "black",
+    size = 5.5,
+    vjust = 0
+  ) +
   scale_fill_manual(values = scenario_cols_fill, labels = scenario_labs) +
   scale_colour_manual(values = scenario_cols, labels = scenario_labs) +
   scale_x_discrete(labels = S_label_labs) +
+  scale_y_continuous(
+    trans = scales::pseudo_log_trans(base = 10, sigma = 1),
+    breaks = c(-1000, -100, -10, -1, 0, 1, 10, 100, 1000),
+    labels = scales::label_number()
+  ) +
   labs(
     x = "Richness bin",
     y = paste0(
@@ -590,17 +682,19 @@ p_box <- ggplot(
   guides(colour = "none", fill = guide_legend(nrow = 1)) +
   theme_dep(base_size = 20)
 
+p_box
+
 plot_complexity <- function(data, pred, xvar, xlab, term, show_y = FALSE) {
   lab_df <- slope_labs %>%
     filter(term == !!term) %>%
     mutate(
       x = min(data[[xvar]], na.rm = TRUE),
-      y = full_dep_ylim[2]
+      y = full_dep_ylim[2] + 0.2 * diff(full_dep_ylim)
     )
   
   ggplot(data, aes(.data[[xvar]], full_dependency_effect)) +
     geom_hline(yintercept = 0, linetype = "dashed", colour = "grey45") +
-    geom_point(size = 1.7, alpha = 0.7, colour = "grey35") +
+    geom_point(size = 1.5, alpha = 0.7, colour = "grey35") +
     geom_ribbon(
       data = pred,
       aes(x = x, ymin = lower, ymax = upper),
@@ -619,9 +713,12 @@ plot_complexity <- function(data, pred, xvar, xlab, term, show_y = FALSE) {
       inherit.aes = FALSE,
       hjust = 0,
       vjust = 1,
-      size = 5
+      size = 5.5
     ) +
-    coord_cartesian(ylim = full_dep_ylim) +
+    coord_cartesian(
+      ylim = full_dep_ylim,
+      clip = "off"
+    ) +
     labs(
       x = xlab,
       y = ifelse(
@@ -667,13 +764,12 @@ main_plot <- (p_box / (p_richness | p_connectance | p_maxTL)) +
 main_plot
 
 ggsave(fig_jpeg, main_plot, width = 14, height = 11, dpi = 600)
-ggsave(fig_pdf, main_plot, width = 14, height = 11)
+ggsave(fig_pdf, main_plot, width = 14, height = 11, device = cairo_pdf)
 
 
 #------------------------------------------------------------
 # 10. Alternative combined figure: partial residual plots for B-D
 #------------------------------------------------------------
-
 fig_jpeg_partial <- here("figures", paste0("model_fws_dependency_combined_partial", reference_suffix, ".jpeg"))
 fig_pdf_partial  <- here("figures", paste0("model_fws_dependency_combined_partial", reference_suffix, ".pdf"))
 
@@ -698,11 +794,19 @@ make_partial_plot <- function(data, model, xvar, xlab, term, show_y = FALSE) {
       upper = pmax(lower_raw, upper_raw)
     )
   
+  y_range <- range(
+    c(plot_df$partial_effect, line_df$lower, line_df$upper),
+    na.rm = TRUE
+  )
+  
+  y_pad <- 0.2 * diff(y_range)
+  y_lim <- y_range + c(-0.04, 0.04) * diff(y_range)
+  
   lab_df <- slope_labs %>%
     filter(term == !!term) %>%
     mutate(
       x = min(plot_df$x, na.rm = TRUE),
-      y = max(c(plot_df$partial_effect, line_df$upper), na.rm = TRUE)
+      y = y_lim[2] + y_pad
     )
   
   ggplot(plot_df, aes(x, partial_effect)) +
@@ -728,6 +832,10 @@ make_partial_plot <- function(data, model, xvar, xlab, term, show_y = FALSE) {
       vjust = 1,
       size = 5
     ) +
+    coord_cartesian(
+      ylim = y_lim,
+      clip = "off"
+    ) +
     labs(
       x = xlab,
       y = ifelse(
@@ -737,7 +845,10 @@ make_partial_plot <- function(data, model, xvar, xlab, term, show_y = FALSE) {
       )
     ) +
     theme_dep(base_size = 20) +
-    theme(legend.position = "none")
+    theme(
+      legend.position = "none",
+      plot.margin = margin(15, 10, 10, 10)
+    )
 }
 
 p_richness_partial <- make_partial_plot(
@@ -770,5 +881,5 @@ main_plot_partial <- (p_box / (p_richness_partial | p_connectance_partial | p_ma
 main_plot_partial
 
 ggsave(fig_jpeg_partial, main_plot_partial, width = 14, height = 11, dpi = 600)
-ggsave(fig_pdf_partial, main_plot_partial, width = 14, height = 11)
+ggsave(fig_pdf_partial, main_plot_partial, width = 14, height = 11, device = cairo_pdf)
 
