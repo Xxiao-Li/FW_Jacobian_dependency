@@ -51,7 +51,7 @@ out_file = joinpath(out_dir, "model_food_webs.jld2")
 feather_file = joinpath(out_dir, "model_food_webs.feather")
 
 # ============================================================
-# Helper functions
+# Functions
 # ============================================================
 function empty_S_counts(S_bins)
     Dict(S_bin.label => 0 for S_bin in S_bins)
@@ -417,6 +417,7 @@ model_foodwebs_df = vcat(dep_rows...)
 Arrow.write(feather_file, model_foodwebs_df)
 
 
+#= update R feather file
 using JLD2
 using DataFrames
 using Arrow
@@ -516,3 +517,4 @@ end
 model_foodwebs_df = vcat(dep_rows...)
 Arrow.write(feather_file, model_foodwebs_df)
 
+=#

@@ -29,6 +29,8 @@ function random_linear_response_params(fw; alpha_range = (1.0, 10.0), α_range =
     return alpha, sparse(omega)
 end
 
+
+
 function persistence(B; threshold = 1e-8)
     mean(B .> threshold)
 end
@@ -36,6 +38,7 @@ end
 function re_lmax(J)
     maximum(real.(eigvals(J)))
 end
+
 
 function prune_realised_species(A, alive, is_producer_original)
     A_alive = A[alive, alive]
@@ -91,6 +94,7 @@ function jacobian_empirical(fw, B, alpha, omega, e)
     return J
 end
 
+
 function jacobian_ode(fw, B, alpha, omega, e, r, K, x, is_producer)
     A = get_A(fw)
     S = size(A, 1)
@@ -126,13 +130,13 @@ function jacobian_ode(fw, B, alpha, omega, e, r, K, x, is_producer)
     return J
 end
 
+
 function equilibrium_foodweb_summary(fw, B_final, alpha, omega, e, r, K, x;
     extinction_threshold = 1e-8
 )
     A = get_A(fw)
 
-    # Producer identity must come from the original ODE model, not from the
-    # pruned realised web.
+    # Producer identity must come from the original ODE model.
     is_producer_original = vec(sum(A .> 0, dims = 2) .== 0)
 
     alive = findall(B_final .> extinction_threshold)
