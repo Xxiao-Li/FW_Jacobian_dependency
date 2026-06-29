@@ -23,7 +23,6 @@ set.seed(2026)
 #------------------------------------------------------------
 # 1. Basic settings
 #------------------------------------------------------------
-
 # Species order:
 # 1 = Phyt, 2 = Bac, 3 = HF, 4 = Cil, 5 = Rot,
 # 6 = HerbCru, 7 = CarnCru, 8 = Fish
@@ -38,7 +37,6 @@ n_rep <- 1000
 #------------------------------------------------------------
 # 2. Read biomass, efficiency, empirical stability
 #------------------------------------------------------------
-
 bio_eff_df <- read_csv(here("data", "LC_fws", "biomass_stability_efficiency.csv"))
 
 # Biomass
@@ -81,7 +79,7 @@ E_list <- spe_efficiency %>%
     E
   })
 
-# Empirical stability and loop-weight values if needed for comparison
+# Empirical stability and loop-weight values
 fw_stability_LWmax <- bio_eff_df %>%
   select(year, phase, "Real(lambda)", Lwmax, "LWmax-3") %>%
   rename(
@@ -93,7 +91,6 @@ fw_stability_LWmax <- bio_eff_df %>%
 #------------------------------------------------------------
 # 3. Read flux data and convert to flux matrices
 #------------------------------------------------------------
-
 flux_df <- read_csv(here("data", "LC_fws", "flux_IS.csv")) %>%
   select(Year, Phase, Prey, Predator, "Flux mg C m-2 d-1") %>%
   rename(Flux = "Flux mg C m-2 d-1") %>%
@@ -157,8 +154,6 @@ cij_list <- imap(flux_mat_list, function(F, web_id) {
 # top-down effect:  J_ij = -c_ij * B_i
 # bottom-up effect: J_ji =  e_j * c_ij * B_j
 #
-# This function uses all non-zero entries in C, not only the upper triangle.
-
 build_jacobian <- function(C, B, E) {
   n <- length(B)
   
@@ -202,7 +197,6 @@ compute_Re_lmax_from_params <- function(C, B, E) {
 #------------------------------------------------------------
 # 6. Empirical Jacobian stability
 #------------------------------------------------------------
-
 empirical_results <- map_dfr(web_ids, function(web_id) {
   C <- cij_list[[web_id]]
   B <- B_list[[web_id]]
@@ -228,9 +222,8 @@ empirical_check <- empirical_results %>%
 print(summary(empirical_check$diff_from_file))
 
 #------------------------------------------------------------
-# 7. Helper functions for randomisation
+# 7. Functions for randomisation
 #------------------------------------------------------------
-
 # Extract empirical parameter pools for one web
 get_parameter_pools <- function(C, B, E) {
   c_pool <- as.numeric(C[C > 0])
@@ -254,6 +247,8 @@ get_links <- function(C) {
     predator = links[, 2]
   )
 }
+
+
 
 empty_params <- function(n, species) {
   C_new <- matrix(0, n, n)
@@ -434,16 +429,10 @@ randomise_params <- function(C, B, E, scenario) {
     return(list(J = J))
   }
   
-  stop("Unknown scenario: ", scenario)
 }
 
 compute_randomised_Re_lmax <- function(C, B, E, scenario) {
   rand <- randomise_params(C, B, E, scenario)
-  
-  if (!is.null(rand$J)) {
-    return(get_Re_lmax(rand$J))
-  }
-  
   J <- build_jacobian(rand$C, rand$B, rand$E)
   get_Re_lmax(J)
 }
@@ -451,7 +440,6 @@ compute_randomised_Re_lmax <- function(C, B, E, scenario) {
 #------------------------------------------------------------
 # 9. Run randomisations
 #------------------------------------------------------------
-
 scenarios <- c(
   "full_dependency",
   "c_dependency",
@@ -468,7 +456,7 @@ randomisation_results <- map_dfr(web_ids, function(web_id) {
   E <- E_list[[web_id]]
   
   map_dfr(scenarios, function(scen) {
-    message("  Scenario: ", scen)
+    message("Scenario: ", scen)
     
     tibble(rep = seq_len(n_rep)) %>%
       mutate(
@@ -536,7 +524,6 @@ effect_tests <- effect_size_results %>%
 #------------------------------------------------------------
 # 11. Compare randomisation scenarios with each other
 #------------------------------------------------------------
-
 # Use one value per food web per scenario to avoid treating
 # 1000 randomisations as independent biological replicates.
 
@@ -809,9 +796,7 @@ p_ses <- effect_size_results %>%
     plot.subtitle = element_blank()
   )
 
-# ------------------------------------------------------------------
-# Combine panels
-# ------------------------------------------------------------------
+
 final_plot <- p_time / p_ses +
   plot_layout(heights = c(1, 1)) +
   plot_annotation(
@@ -930,7 +915,7 @@ scenario_levels <- c(
   "no_dependency"
 )
 
-# Wide format: one row per food web, one column per scenario
+
 scenario_wide <- scenario_summary_by_web %>%
   select(web_id, scenario, mean_Re) %>%
   mutate(

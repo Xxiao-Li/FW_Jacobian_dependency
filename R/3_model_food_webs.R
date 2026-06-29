@@ -24,12 +24,11 @@ source(here("R/internal.R"))
 #------------------------------------------------------------
 # 1. Settings
 #------------------------------------------------------------
-
 out_dir <- here("data/model_fws/linear_response_sim")
 
 feather_file <- file.path(out_dir, "model_food_webs.feather")
 
-# Choose baseline stability:
+# TEST baseline stability:
 # "Re_emp"     = empirical-style Jacobian, diagonal = 0
 # "Re_intdiag" = off-diagonal trophic terms + interaction-derived diagonal only
 # "Re_ode"     = full ODE Jacobian, including interaction-derived and background diagonal
@@ -96,7 +95,6 @@ scenario_labs <- c(
 #------------------------------------------------------------
 # 2. Read Julia output and rebuild webs
 #------------------------------------------------------------
-
 modelfw_df <- read_feather(feather_file) %>%
   mutate(
     valid_id = as.character(valid_id),
@@ -151,7 +149,6 @@ web_meta <- modelfw_df %>%
 #------------------------------------------------------------
 # 3. Validate rebuilt empirical, intdiag, and ODE-style Jacobians
 #------------------------------------------------------------
-
 validation_check <- map_dfr(names(web_objects), function(id) {
   obj <- web_objects[[id]]
   meta <- web_meta %>% filter(valid_id == id)
@@ -230,7 +227,6 @@ summary(validation_check$max_abs_offdiag_diff)
 #------------------------------------------------------------
 # 4. Reference stability table
 #------------------------------------------------------------
-
 reference_results <- web_meta %>%
   select(
     valid_id, S_label, S_target,
@@ -241,7 +237,6 @@ reference_results <- web_meta %>%
 #------------------------------------------------------------
 # 5. Randomisation
 #------------------------------------------------------------
-# Important:
 # Re_emp:
 #   J_rand = A_rand, diagonal = 0
 #
@@ -251,92 +246,91 @@ reference_results <- web_meta %>%
 #
 # Re_ode:
 #   J_rand = A_rand + D_interaction_rand + D_background
-
-randomisation_results <- map_dfr(names(web_objects), function(id) {
-  message("Running web: ", id)
-  
-  obj <- web_objects[[id]]
-  meta <- web_meta %>% filter(valid_id == id)
-  
-  if (identical(reference_type, "Re_emp")) {
-    
-    background_diag <- NULL
-    
-  } else if (identical(reference_type, "Re_intdiag")) {
-    
-    if (is.null(obj$J_ode_diag)) {
-      stop("J_ode_diag is missing. Update the Feather file before running Re_intdiag.")
-    }
-    
-    # Remove D_background.
-    # compute_randomised_Re_lmax_ode() will still add D_interaction_rand.
-    background_diag <- rep(0, length(obj$J_ode_diag))
-    
-  } else if (identical(reference_type, "Re_ode")) {
-    
-    if (is.null(obj$J_ode_diag)) {
-      stop("J_ode_diag is missing. Update the Feather file before running Re_ode.")
-    }
-    
-    interaction_diag_original <- get_interaction_diag_ode(
-      obj$C,
-      obj$B,
-      obj$e_link
-    )
-    
-    background_diag <- obj$J_ode_diag - interaction_diag_original
-    
-  } else {
-    stop("Unknown reference_type: ", reference_type)
-  }
-  
-  map_dfr(scenario_levels, function(scen) {
-    tibble(
-      rep = seq_len(n_rep),
-      valid_id = id,
-      S_label = meta$S_label,
-      S_target = meta$S_target,
-      richness_eq = meta$richness_eq,
-      connectance_eq = meta$connectance_eq,
-      maxTL_eq = meta$maxTL_eq,
-      L_eq = meta$L_eq,
-      reference_Re = reference_type,
-      scenario = scen,
-      Re_lmax = map_dbl(
-        seq_len(n_rep),
-        ~ if (identical(reference_type, "Re_emp")) {
-          compute_randomised_Re_lmax(
-            obj$C,
-            obj$B,
-            obj$e_link,
-            scen
-          )
-        } else {
-          compute_randomised_Re_lmax_ode(
-            obj$C,
-            obj$B,
-            obj$e_link,
-            scen,
-            background_diag
-          )
-        }
-      )
-    )
-  })
-}) %>%
-  mutate(
-    scenario = factor(scenario, levels = scenario_levels),
-    S_label = factor(S_label, levels = S_label_levels)
-  )
-
-saveRDS(randomisation_results, randomisation_rds)
+# 
+# randomisation_results <- map_dfr(names(web_objects), function(id) {
+#   message("Running web: ", id)
+#   
+#   obj <- web_objects[[id]]
+#   meta <- web_meta %>% filter(valid_id == id)
+#   
+#   if (identical(reference_type, "Re_emp")) {
+#     
+#     background_diag <- NULL
+#     
+#   } else if (identical(reference_type, "Re_intdiag")) {
+#     
+#     if (is.null(obj$J_ode_diag)) {
+#       stop("J_ode_diag is missing. Update the Feather file before running Re_intdiag.")
+#     }
+#     
+#     # Remove D_background.
+#     # compute_randomised_Re_lmax_ode() will still add D_interaction_rand.
+#     background_diag <- rep(0, length(obj$J_ode_diag))
+#     
+#   } else if (identical(reference_type, "Re_ode")) {
+#     
+#     if (is.null(obj$J_ode_diag)) {
+#       stop("J_ode_diag is missing. Update the Feather file before running Re_ode.")
+#     }
+#     
+#     interaction_diag_original <- get_interaction_diag_ode(
+#       obj$C,
+#       obj$B,
+#       obj$e_link
+#     )
+#     
+#     background_diag <- obj$J_ode_diag - interaction_diag_original
+#     
+#   } else {
+#     stop("Unknown reference_type: ", reference_type)
+#   }
+#   
+#   map_dfr(scenario_levels, function(scen) {
+#     tibble(
+#       rep = seq_len(n_rep),
+#       valid_id = id,
+#       S_label = meta$S_label,
+#       S_target = meta$S_target,
+#       richness_eq = meta$richness_eq,
+#       connectance_eq = meta$connectance_eq,
+#       maxTL_eq = meta$maxTL_eq,
+#       L_eq = meta$L_eq,
+#       reference_Re = reference_type,
+#       scenario = scen,
+#       Re_lmax = map_dbl(
+#         seq_len(n_rep),
+#         ~ if (identical(reference_type, "Re_emp")) {
+#           compute_randomised_Re_lmax(
+#             obj$C,
+#             obj$B,
+#             obj$e_link,
+#             scen
+#           )
+#         } else {
+#           compute_randomised_Re_lmax_ode(
+#             obj$C,
+#             obj$B,
+#             obj$e_link,
+#             scen,
+#             background_diag
+#           )
+#         }
+#       )
+#     )
+#   })
+# }) %>%
+#   mutate(
+#     scenario = factor(scenario, levels = scenario_levels),
+#     S_label = factor(S_label, levels = S_label_levels)
+#   )
+# 
+# saveRDS(randomisation_results, randomisation_rds)
 
 randomisation_results <- readRDS(randomisation_rds)
 
 #------------------------------------------------------------
 # 6. Calculate web-level SES deviations
 #------------------------------------------------------------
-
 rep_check <- randomisation_results %>%
   count(valid_id, scenario, name = "n_realisations")
 
@@ -371,8 +365,6 @@ analysis_df <- scenario_summary_by_web %>%
   mutate(
     raw_deviation_from_reference = mean_Re - Re_reference,
     
-    # Panel A:
-    # scenario-specific SES deviation from reference stability
     ses_deviation_from_reference =
       raw_deviation_from_reference / sd_Re,
     
@@ -390,7 +382,7 @@ analysis_df <- scenario_summary_by_web %>%
     is.finite(z_maxTL)
   )
 
-# Optional check for very small SDs
+
 scenario_summary_by_web %>%
   group_by(scenario) %>%
   summarise(
@@ -402,16 +394,13 @@ scenario_summary_by_web %>%
   print()
 
 #------------------------------------------------------------
-# 7. Main analysis: stabilising effect of full dependency
+# 7. stabilising effect of full dependency
 #------------------------------------------------------------
 # For panels B-D and the LM:
-#
 #   full_dependency_effect =
 #     (mean_Re(no_dependency) - mean_Re(full_dependency)) /
 #     sd_Re(no_dependency)
-#
-# Positive values mean that removing dependency increases Re(lambda_max),
-# so full dependency is stabilising.
+# Positive values mean that removing dependency increases Re(lambda_max)
 
 full_dep_df <- scenario_summary_by_web %>%
   filter(scenario %in% c("full_dependency", "no_dependency")) %>%
@@ -570,9 +559,7 @@ plot_df <- analysis_df %>%
     S_label = factor(S_label, levels = S_label_levels)
   )
 
-#------------------------------------------------------------
 # Pairwise comparisons among scenarios within each richness bin
-#------------------------------------------------------------
 mod_letters <- lmer(
   ses_deviation_from_reference ~ S_label * scenario + (1 | valid_id),
   data = plot_df
@@ -768,7 +755,7 @@ ggsave(fig_pdf, main_plot, width = 14, height = 11, device = cairo_pdf)
 
 
 #------------------------------------------------------------
-# 10. Alternative combined figure: partial residual plots for B-D
+# 10. partial residual plots for B-D
 #------------------------------------------------------------
 fig_jpeg_partial <- here("figures", paste0("model_fws_dependency_combined_partial", reference_suffix, ".jpeg"))
 fig_pdf_partial  <- here("figures", paste0("model_fws_dependency_combined_partial", reference_suffix, ".pdf"))
@@ -882,4 +869,8 @@ main_plot_partial
 
 ggsave(fig_jpeg_partial, main_plot_partial, width = 14, height = 11, dpi = 600)
 ggsave(fig_pdf_partial, main_plot_partial, width = 14, height = 11, device = cairo_pdf)
+
+
+
+
 

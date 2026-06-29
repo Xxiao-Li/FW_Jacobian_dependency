@@ -236,7 +236,6 @@ base_panel_theme <- theme(
 
 # ------------------------------------------------------------------
 # Panel (a): analytical landscape
-# Analytical Re(lambda_max) legend stays on the right
 # ------------------------------------------------------------------
 
 p_analytical <- ggplot(grid, aes(x = T1, y = T0, fill = ReLambdaMax)) +
@@ -272,7 +271,6 @@ p_analytical <- ggplot(grid, aes(x = T1, y = T0, fill = ReLambdaMax)) +
 
 # ------------------------------------------------------------------
 # Ratio plot: |T0| / |T1| against Re(lambda_max)
-# sign(T0) legend is inside the panel
 # ------------------------------------------------------------------
 
 grid_plot <- grid %>%
@@ -319,8 +317,6 @@ p_ratio <- ggplot(
 
 # ------------------------------------------------------------------
 # Function for simulated scenario panels
-# Only panel (f) shows the simulated Re(lambda_max) legend,
-# placed inside the panel frame
 # ------------------------------------------------------------------
 
 plot_scenario <- function(df, show_legend = FALSE) {
@@ -382,7 +378,6 @@ plot_scenario <- function(df, show_legend = FALSE) {
 
 # ------------------------------------------------------------------
 # Create simulated panels
-# Legend appears only in panel (f)
 # ------------------------------------------------------------------
 
 p_full <- plot_scenario(
@@ -412,7 +407,6 @@ p_no <- plot_scenario(
 
 # ------------------------------------------------------------------
 # Panel (g): scenario comparison
-# Horizontal boxplot avoids height distortion
 # ------------------------------------------------------------------
 
 scenario_cols <- c(
@@ -446,12 +440,6 @@ p_box <- ggplot(df_box, aes(x = ReLambdaMax, y = Case, fill = Case)) +
     axis.text.x = element_text(size = fss, color = "black")
   )
 
-# ------------------------------------------------------------------
-# Layout
-# Row 1: analytical + ratio, narrower and centered
-# Row 2: full dependency + c only + B only
-# Row 3: e only + no dependency (with legend inside) + scenario comparison
-# ------------------------------------------------------------------
 
 p_blank <- ggplot() + theme_void()
 
