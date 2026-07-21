@@ -53,3 +53,5 @@ Manifest.toml
 
 # un track files
 code/test_linear.jl
+run.sh
+/data/model_fws/linear_response_sim_7bins_70tasks
