@@ -32,7 +32,7 @@ feather_file <- file.path(out_dir, "model_food_webs_dependency_links.feather") #
 # "Re_intdiag" = off-diagonal trophic terms + interaction-derived diagonal only
 # "Re_ode"     = full ODE Jacobian, including interaction-derived and background diagonal
 
- reference_type <- "Re_emp" # To do randomization
+ reference_type <- "Re_emp" # To do randomization and to quantify stabilizing effect of full dependency
 # reference_type <- "Re_intdiag"
 # reference_type <- "Re_ode"
 
@@ -48,8 +48,8 @@ reference_suffix <- paste0("_", reference_type)
 randomisation_rds <- file.path(out_dir, 
                                paste0("model_fw_dependency_randomization", reference_suffix, ".rds"))
 
-fig_jpeg <- here("figures", paste0("model_fws_dependency_", reference_suffix, ".jpeg"))
-#fig_pdf  <- here("figures", paste0("model_fws_dependency_", reference_suffix, ".pdf"))
+fig_jpeg <- here("figures", paste0("model_fws_dependency", reference_suffix, ".jpeg"))
+#fig_pdf  <- here("figures", paste0("model_fws_dependency", reference_suffix, ".pdf"))
 
 S_label_levels <- c("6_10", "11_15", "16_20", "21_25", "26_30", "31_35", "36_40")
 
@@ -72,10 +72,10 @@ scenario_levels <- c(
 )
 
 scenario_labs <- c(
-  full_dependency = "Full structural\ndependency",
-  c_dependency    = "Interaction coefficient\ndependency",
-  B_dependency    = "Shared biomass\ndependency",
-  e_dependency    = "Shared efficiency\ndependency",
+  full_dependency = "Full dependency",
+  c_dependency    = "Feeding-coefficient\ndependency",
+  B_dependency    = "Shared-biomass\ndependency",
+  e_dependency    = "Shared-efficiency\ndependency",
   no_dependency   = "No dependency"
 )
 
@@ -253,42 +253,29 @@ rep_check <- randomisation_results %>%
   count(valid_id, scenario, name = "n_realisations")
 summary(rep_check$n_realisations)
 
-rep_check %>%
-  count(n_realisations) %>%
-  print()
-
-rep_check %>%
-  filter(n_realisations != n_rep) %>%
-  print()
-
 scenario_summary_by_web <- randomisation_results %>%
-  group_by(
-    valid_id, S_label, 
-    richness_eq, connectance_eq, maxTL_eq, L_eq,
-    scenario
-  ) %>%
+  group_by(valid_id, scenario) %>%
   summarise(
     mean_Re = mean(Re_lmax, na.rm = TRUE),
-    sd_Re = safe_sd(Re_lmax),
+    sd_Re = sd(Re_lmax, na.rm = TRUE),
     .groups = "drop"
   ) %>%
   left_join(
     web_meta %>%
-      dplyr::select(valid_id, reference_Re, Re_reference, Re_emp, Re_intdiag, Re_ode),
+      select(
+        valid_id, S_label, richness_eq, connectance_eq, maxTL_eq,
+        L_eq, Re_emp, Re_intdiag, Re_ode,
+        reference_Re, Re_reference
+      ),
     by = "valid_id"
+  ) %>%
+  mutate(
+    ses_deviation_from_reference =
+      (mean_Re - Re_reference) / sd_Re,
+    scenario = factor(scenario, levels = scenario_levels),
+    S_label = factor(S_label, levels = S_label_levels)
   )
-
-scenario_summary_by_web %>%
-  group_by(scenario) %>%
-  summarise(
-    min_sd_Re = min(sd_Re, na.rm = TRUE),
-    median_sd_Re = median(sd_Re, na.rm = TRUE),
-    n_zero_sd = sum(sd_Re == 0, na.rm = TRUE),
-    .groups = "drop"
-  ) 
-
-%>%
-  print()
+  
 
 #------------------------------------------------------------
 # 7. stabilising effect of full dependency
@@ -302,8 +289,8 @@ scenario_summary_by_web %>%
 full_dep_df <- scenario_summary_by_web %>%
   filter(scenario %in% c("full_dependency", "no_dependency")) %>%
   mutate(
-    z_log_richness = make_z(log(richness_eq)),
-    z_log_connectance = make_z(log(connectance_eq)),
+    z_log_richness = make_z(log(richness_eq)), #using ln richness
+    z_log_connectance = make_z(log(connectance_eq)), #using ln connectance
     z_maxTL = make_z(maxTL_eq)
   ) %>%
   select(
@@ -319,12 +306,12 @@ full_dep_df <- scenario_summary_by_web %>%
     full_dependency_effect_raw =
       mean_Re_no_dependency - mean_Re_full_dependency,
     
-    full_dependency_effect =
+    full_dependency_effect_std =
       full_dependency_effect_raw / sd_Re_no_dependency
   ) 
 
 full_dep_lm <- lm(
-  full_dependency_effect ~ z_log_richness + z_log_connectance + z_maxTL,
+  full_dependency_effect_std ~ z_log_richness + z_log_connectance + z_maxTL,
   data = full_dep_df
 )
 
@@ -416,7 +403,7 @@ slope_labs <- tidy(full_dep_lm, conf.int = TRUE) %>%
 
 full_dep_ylim <- range(
   c(
-    full_dep_df$full_dependency_effect,
+    full_dep_df$full_dependency_effect_std,
     pred_richness$lower, pred_richness$upper,
     pred_connectance$lower, pred_connectance$upper,
     pred_maxTL$lower, pred_maxTL$upper
@@ -427,53 +414,30 @@ full_dep_ylim <- range(
 full_dep_ylim <- full_dep_ylim + c(-0.05, 0.05) * diff(full_dep_ylim)
 
 #------------------------------------------------------------
-# 9. Combined figure
+# 9. Figure: boxplot + partial residual plots
 #------------------------------------------------------------
 theme_dep <- function(base_size = 15) {
   theme_classic(base_size = base_size) +
     theme(
+      panel.border = element_rect(colour = "black", fill = NA, linewidth = 0.45),
+      axis.line = element_blank(),
       axis.text = element_text(colour = "black", size = base_size - 2),
       axis.title = element_text(colour = "black", size = base_size),
-      axis.line = element_line(linewidth = 0.45),
       axis.ticks = element_line(linewidth = 0.45),
       legend.position = "bottom",
       legend.title = element_blank(),
       legend.text = element_text(size = base_size - 2),
-      plot.tag = element_text(face = "bold", size = base_size, colour = "black")
+      plot.tag = element_text(face = "bold", size = base_size)
     )
 }
 
-plot_df <- scenario_summary_by_web %>%
-  mutate(
-    raw_deviation_from_reference = mean_Re - Re_reference,
-    ses_deviation_from_reference = raw_deviation_from_reference / sd_Re,
-    z_log_richness = as.numeric(scale(log(richness_eq))),
-    z_log_connectance = as.numeric(scale(log(connectance_eq))),
-    z_maxTL = as.numeric(scale(maxTL_eq)),
-    scenario = factor(scenario, levels = scenario_levels),
-    S_label = factor(S_label, levels = S_label_levels)
-  ) 
-
-# Pairwise comparisons among scenarios within each richness bin
+# Letters comparing scenarios within each richness bin
 mod_letters <- lmer(
   ses_deviation_from_reference ~ S_label * scenario + (1 | valid_id),
-  data = plot_df
+  data = scenario_summary_by_web
 )
 
-emm_scen <- emmeans(
-  mod_letters,
-  specs = ~ scenario,
-  by = "S_label"
-)
-
-pairwise_scen <- contrast(
-  emm_scen,
-  method = "pairwise",
-  by = "S_label",
-  adjust = "tukey"
-)
-
-print(pairwise_scen)
+emm_scen <- emmeans(mod_letters, ~ scenario | S_label)
 
 scenario_letters <- multcomp::cld(
   emm_scen,
@@ -482,290 +446,154 @@ scenario_letters <- multcomp::cld(
   Letters = letters
 ) %>%
   as.data.frame() %>%
-  tibble::as_tibble() %>%
+  as_tibble() %>%
   mutate(
     .group = gsub(" ", "", .group),
     scenario = factor(scenario, levels = scenario_levels),
-    S_label = factor(S_label, levels = S_label_levels)
-  )
-
-letter_pos <- plot_df %>%
-  group_by(S_label, scenario) %>%
-  summarise(
-    y = quantile(ses_deviation_from_reference, 0.98, na.rm = TRUE),
-    .groups = "drop"
-  ) %>%
-  group_by(S_label) %>%
-  mutate(
-    y = y + 0.25 * diff(range(plot_df$ses_deviation_from_reference, na.rm = TRUE))
-  ) %>%
-  ungroup()
-
-scenario_letters <- scenario_letters %>%
-  left_join(letter_pos, by = c("S_label", "scenario"))
-
-scenario_letters %>%
-  dplyr::select(
-    dplyr::any_of(c(
-      "S_label", "scenario", "emmean", "SE", "df",
-      "lower.CL", "upper.CL", "asymp.LCL", "asymp.UCL", ".group"
-    ))
-  ) %>%
-  tibble::as_tibble() %>%
-  print(n = Inf)
+    S_label = factor(S_label, levels = S_label_levels)) %>%
+  left_join(
+    scenario_summary_by_web %>%
+      group_by(S_label, scenario) %>%
+      summarise(
+        y = max(ses_deviation_from_reference, na.rm = TRUE) + 1,
+        .groups = "drop"
+      ),
+    by = c("S_label", "scenario") )
 
 p_box <- ggplot(
-  plot_df,
-  aes(S_label, ses_deviation_from_reference, fill = scenario, colour = scenario)
-) +
+  scenario_summary_by_web, aes(S_label, ses_deviation_from_reference, 
+               fill = scenario, colour = scenario)) +
   geom_hline(yintercept = 0, linetype = "dashed", colour = "grey45") +
-  geom_boxplot(
-    position = position_dodge(0.82),
-    width = 0.58,
-    alpha = 0.58,
-    outlier.shape = NA
-  ) +
-  geom_point(
-    position = position_jitterdodge(jitter.width = 0.12, dodge.width = 0.82),
-    alpha = 1,
-    size = 1.5,
-    stroke = 0
-  ) +
-  geom_text(
-    data = scenario_letters,
-    aes(
-      x = S_label,
-      y = y,
-      label = .group,
-      group = scenario
-    ),
-    position = position_dodge(width = 0.82),
-    inherit.aes = FALSE,
-    colour = "black",
-    size = 5.5,
-    vjust = 0
-  ) +
+  geom_boxplot(position = position_dodge(0.8), 
+               width = 0.6, alpha = 0.6, outlier.shape = NA) +
+  geom_point(position = position_jitterdodge(0.1, 0.8), 
+             size = 1.5, stroke = 0) +
+  geom_text(data = scenario_letters,
+            aes(S_label, y, label = .group, group = scenario),
+            position = position_dodge(0.82), inherit.aes = FALSE,
+            size = 5.5,vjust = 0 ) +
   scale_fill_manual(values = scenario_cols_fill, labels = scenario_labs) +
   scale_colour_manual(values = scenario_cols, labels = scenario_labs) +
   scale_x_discrete(labels = S_label_labs) +
-  scale_y_continuous(
-    trans = scales::pseudo_log_trans(base = 10, sigma = 1),
-    breaks = c(-1000, -100, -10, -1, 0, 1, 10, 100, 1000),
-    labels = scales::label_number()
-  ) +
-  labs(
-    x = "Richness bin",
-    y = paste0(
-      "Scenario-specific SES deviation from\n",
-      reference_label,
-      " stability"
-    )
-  ) +
+  # scale_y_continuous(limits = c(-3, 3),
+  #                    breaks = c(-4, -2, 0, 1, 2),
+  #                    expand = expansion(mult = c(0.02, 0.08))) +
+  scale_y_continuous(limits = c(-1, 7),
+                     breaks = c(-1, 0, 1, 2, 4, 6),
+                     expand = expansion(mult = c(0.02, 0.08))) +
+  labs(x = "Richness bin", 
+       y = paste0("SES deviation from\n", reference_label) ) +
   guides(colour = "none", fill = guide_legend(nrow = 1)) +
-  theme_dep(base_size = 20)
-
+  theme_dep(20)
 p_box
 
-plot_complexity <- function(data, pred, xvar, xlab, term, show_y = FALSE) {
-  lab_df <- slope_labs %>%
-    filter(term == !!term) %>%
-    mutate(
-      x = min(data[[xvar]], na.rm = TRUE),
-      y = full_dep_ylim[2] + 0.2 * diff(full_dep_ylim)
+
+
+# bottom panel
+make_partial_plot <- function(data, model, xvar, xlab, show_y = FALSE) {
+  
+  beta_df <- broom::tidy(model, conf.int = TRUE) %>%
+    filter(term == xvar)
+  
+  beta <- beta_df$estimate
+  
+  panel_title <- slope_labs$label[slope_labs$term == xvar]
+  
+  partial_df <- data %>%
+    transmute(
+      x = .data[[xvar]],
+      y = residuals(model) + beta * .data[[xvar]]
     )
   
-  ggplot(data, aes(.data[[xvar]], full_dependency_effect)) +
-    geom_hline(yintercept = 0, linetype = "dashed", colour = "grey45") +
-    geom_point(size = 1.5, alpha = 0.7, colour = "grey35") +
+  line_df <- tibble(
+    x = seq(
+      min(partial_df$x, na.rm = TRUE),
+      max(partial_df$x, na.rm = TRUE),
+      length.out = 100
+    ),
+    fit   = beta_df$estimate * x,
+    lower1 = beta_df$conf.low * x,
+    upper1 = beta_df$conf.high * x
+  ) %>%
+    mutate(
+      lower = pmin(lower1, upper1),
+      upper = pmax(lower1, upper1)
+    )
+  
+  ggplot(partial_df, aes(x, y)) +
+    geom_hline(
+      yintercept = 0,
+      linetype = "dashed",
+      colour = "grey45"
+    ) +
+    geom_point(
+      size = 1.7,
+      alpha = 0.7,
+      colour = "grey35"
+    ) +
     geom_ribbon(
-      data = pred,
+      data = line_df,
       aes(x = x, ymin = lower, ymax = upper),
       inherit.aes = FALSE,
       alpha = 0.22
     ) +
     geom_line(
-      data = pred,
+      data = line_df,
       aes(x = x, y = fit),
       inherit.aes = FALSE,
       linewidth = 0.9
     ) +
-    geom_text(
-      data = lab_df,
-      aes(x = x, y = y, label = label),
-      inherit.aes = FALSE,
-      hjust = 0,
-      vjust = 1,
-      size = 5.5
-    ) +
-    coord_cartesian(
-      ylim = full_dep_ylim,
-      clip = "off"
-    ) +
     labs(
+      title = panel_title,
       x = xlab,
-      y = ifelse(
-        show_y,
-        "Standardised stabilising effect\nof full dependency",
-        ""
-      )
+      y = if (show_y) {
+        "Partial effect on standardized\nstabilizing effect"
+      } else {
+        NULL
+      }
     ) +
-    theme_dep(base_size = 20) +
-    theme(legend.position = "none")
+    theme_dep(20) +
+    theme(
+      legend.position = "none",
+      plot.title = element_text(
+        size = 16,
+        face = "bold",
+        hjust = 0,
+        margin = margin(b = 8)
+      )
+    )
 }
-
-p_richness <- plot_complexity(
-  full_dep_df,
-  pred_richness,
+p_richness <- make_partial_plot(
+  full_dep_df, full_dep_lm,
   "z_log_richness",
-  "Log richness,\nstandardised",
-  "z_log_richness",
+  "Ln(Richness),\nstandardized",
   TRUE
 )
 
-p_connectance <- plot_complexity(
-  full_dep_df,
-  pred_connectance,
+p_connectance <- make_partial_plot(
+  full_dep_df, full_dep_lm,
   "z_log_connectance",
-  "Log connectance,\nstandardised",
-  "z_log_connectance"
+  "Ln(connectance),\nstandardized"
 )
 
-p_maxTL <- plot_complexity(
-  full_dep_df,
-  pred_maxTL,
+p_maxTL <- make_partial_plot(
+  full_dep_df, full_dep_lm,
   "z_maxTL",
-  "Max. trophic level,\nstandardised",
-  "z_maxTL"
+  "Max. trophic level,\nstandardized"
 )
 
 main_plot <- (p_box / (p_richness | p_connectance | p_maxTL)) +
   plot_layout(heights = c(1.15, 1)) +
-  plot_annotation(tag_levels = "a", tag_prefix = "(", tag_suffix = ")") &
-  theme(plot.tag = element_text(face = "bold", size = 20))
+  plot_annotation(
+    tag_levels = "a",
+    tag_prefix = "(",
+    tag_suffix = ")"
+  )
 
 main_plot
 
-ggsave(fig_jpeg, main_plot, width = 14, height = 11, dpi = 600)
-ggsave(fig_pdf, main_plot, width = 14, height = 11, device = cairo_pdf)
-
-
-#------------------------------------------------------------
-# 10. partial residual plots for B-D
-#------------------------------------------------------------
-fig_jpeg_partial <- here("figures", paste0("model_fws_dependency_combined_partial", reference_suffix, ".jpeg"))
-fig_pdf_partial  <- here("figures", paste0("model_fws_dependency_combined_partial", reference_suffix, ".pdf"))
-
-make_partial_plot <- function(data, model, xvar, xlab, term, show_y = FALSE) {
-  beta_df <- tidy(model, conf.int = TRUE) %>% filter(term == !!term)
-  beta <- beta_df$estimate
-  
-  plot_df <- data %>%
-    mutate(
-      x = .data[[xvar]],
-      partial_effect = residuals(model) + beta * .data[[xvar]]
-    )
-  
-  line_df <- tibble(
-    x = seq(min(plot_df$x, na.rm = TRUE), max(plot_df$x, na.rm = TRUE), length.out = 100)
-  ) %>%
-    mutate(
-      fit = beta_df$estimate * x,
-      lower_raw = beta_df$conf.low * x,
-      upper_raw = beta_df$conf.high * x,
-      lower = pmin(lower_raw, upper_raw),
-      upper = pmax(lower_raw, upper_raw)
-    )
-  
-  y_range <- range(
-    c(plot_df$partial_effect, line_df$lower, line_df$upper),
-    na.rm = TRUE
-  )
-  
-  y_pad <- 0.2 * diff(y_range)
-  y_lim <- y_range + c(-0.04, 0.04) * diff(y_range)
-  
-  lab_df <- slope_labs %>%
-    filter(term == !!term) %>%
-    mutate(
-      x = min(plot_df$x, na.rm = TRUE),
-      y = y_lim[2] + y_pad
-    )
-  
-  ggplot(plot_df, aes(x, partial_effect)) +
-    geom_hline(yintercept = 0, linetype = "dashed", colour = "grey45") +
-    geom_point(size = 1.7, alpha = 0.7, colour = "grey35") +
-    geom_ribbon(
-      data = line_df,
-      aes(x = x, ymin = lower, ymax = upper),
-      inherit.aes = FALSE,
-      alpha = 0.22
-    ) +
-    geom_line(
-      data = line_df,
-      aes(x = x, y = fit),
-      inherit.aes = FALSE,
-      linewidth = 0.9
-    ) +
-    geom_text(
-      data = lab_df,
-      aes(x = x, y = y, label = label),
-      inherit.aes = FALSE,
-      hjust = 0,
-      vjust = 1,
-      size = 5
-    ) +
-    coord_cartesian(
-      ylim = y_lim,
-      clip = "off"
-    ) +
-    labs(
-      x = xlab,
-      y = ifelse(
-        show_y,
-        "Partial effect on standardised\nstabilising effect",
-        ""
-      )
-    ) +
-    theme_dep(base_size = 20) +
-    theme(
-      legend.position = "none",
-      plot.margin = margin(15, 10, 10, 10)
-    )
-}
-
-p_richness_partial <- make_partial_plot(
-  full_dep_df, full_dep_lm,
-  "z_log_richness",
-  "Log richness,\nstandardised",
-  "z_log_richness",
-  TRUE
-)
-
-p_connectance_partial <- make_partial_plot(
-  full_dep_df, full_dep_lm,
-  "z_log_connectance",
-  "Log connectance,\nstandardised",
-  "z_log_connectance"
-)
-
-p_maxTL_partial <- make_partial_plot(
-  full_dep_df, full_dep_lm,
-  "z_maxTL",
-  "Max. trophic level,\nstandardised",
-  "z_maxTL"
-)
-
-main_plot_partial <- (p_box / (p_richness_partial | p_connectance_partial | p_maxTL_partial)) +
-  plot_layout(heights = c(1.15, 1)) +
-  plot_annotation(tag_levels = "a", tag_prefix = "(", tag_suffix = ")") &
-  theme(plot.tag = element_text(face = "bold", size = 20))
-
-main_plot_partial
-
-ggsave(fig_jpeg_partial, main_plot_partial, width = 14, height = 11, dpi = 600)
-ggsave(fig_pdf_partial, main_plot_partial, width = 14, height = 11, device = cairo_pdf)
-
-
+ggsave(fig_jpeg, main_plot, width = 15, height = 12, dpi = 600)
+#ggsave(fig_pdf, main_plot, width = 14, height = 12, device = cairo_pdf)
 
 
 
