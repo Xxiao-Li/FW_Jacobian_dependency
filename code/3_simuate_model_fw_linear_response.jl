@@ -38,8 +38,8 @@ max_attempts = 200_000
 
 alpha_range = (0.1, 5.0)
 Z = 100
-tmax = 4000
-tmin = 500
+tmax = 10000
+tmin = 1000
 
 extinction_threshold = 1e-12
 Re_ode_tolerance = 1e-6
@@ -135,48 +135,111 @@ while valid_id < n_valid_target && attempt < max_attempts
         A = get_A(fw)
         sum(A .> 0) == 0 && continue
 
-        alpha, omega = random_linear_response_params(fw; alpha_range = alpha_range)
+        # ------------------------------------------------------------
+        # First simulation: burn-up on the initial generated web
+        # ------------------------------------------------------------
+        alpha, omega = random_linear_response_params(fw; alpha_range=alpha_range)
 
-        model = default_model(
+        model_burn = default_model(
             fw,
-            LinearResponse(; alpha = alpha, w = omega),
-            BodyMass(; Z = Z),
+            LinearResponse(; alpha=alpha, w=omega),
+            BodyMass(; Z=Z),
             Efficiency(:Miele2019)
         )
 
         B0 = rand(S) .+ 0.1
 
-        sol = simulate(
-            model,
+        sol_burn = simulate(
+            model_burn,
             B0,
             tmax;
-            callback = CallbackSet(
-                extinction_callback(model, extinction_threshold; verbose = false),
+            callback=CallbackSet(
+                extinction_callback(model_burn, extinction_threshold; verbose=false),
                 TerminateSteadyState(
                     1e-8,
                     1e-6,
                     DiffEqCallbacks.allDerivPass;
-                    min_t = tmin
+                    min_t=tmin
                 )
             ),
-            show_degenerated = false
+            show_degenerated=false
+        )
+
+        B_burn = Array(sol_burn.u[end])
+        all(isfinite.(B_burn)) || continue
+
+        # ------------------------------------------------------------
+        # Prune burn-up result to realised alive-connected web
+        # ------------------------------------------------------------
+        A_burn0 = get_A(model_burn)
+        is_producer_burn0 = vec(sum(A_burn0 .> 0, dims=2) .== 0)
+
+        alive_burn = findall(B_burn .> extinction_threshold)
+        isempty(alive_burn) && continue
+
+        keep_burn = prune_realised_species(
+            A_burn0,
+            alive_burn,
+            is_producer_burn0
+        )
+
+        isempty(keep_burn) && continue
+
+        A_burn = A_burn0[keep_burn, keep_burn]
+        sum(A_burn .> 0) == 0 && continue
+
+        B0_finalrun = B_burn[keep_burn]
+
+        alpha_burn = alpha[keep_burn]
+        omega_burn = Matrix(omega)[keep_burn, keep_burn]
+
+        # Rebuild the food web from the burn-up realised adjacency matrix
+        fw_burn = Foodweb(A_burn)
+
+        # ------------------------------------------------------------
+        # Second simulation: final equilibrium on realised burn-up web
+        # ------------------------------------------------------------
+        model = default_model(
+            fw_burn,
+            LinearResponse(; alpha=alpha_burn, w=omega_burn),
+            BodyMass(; Z=Z),
+            Efficiency(:Miele2019)
+        )
+
+        sol = simulate(
+            model,
+            B0_finalrun,
+            tmax;
+            callback=CallbackSet(
+                extinction_callback(model, extinction_threshold; verbose=false),
+                TerminateSteadyState(
+                    1e-8,
+                    1e-6,
+                    DiffEqCallbacks.allDerivPass;
+                    min_t=tmin
+                )
+            ),
+            show_degenerated=false
         )
 
         B_final = Array(sol.u[end])
+       
         all(isfinite.(B_final)) || continue
+        all(B_final .> extinction_threshold) || continue
 
+        # Parameters from the rebuilt final model
         e, r, K, x = model.e, model.r, model.K, model.x
 
         eq = equilibrium_foodweb_summary(
-            fw,
+            fw_burn,
             B_final,
-            alpha,
-            omega,
+            alpha_burn,
+            omega_burn,
             e,
             r,
             K,
             x;
-            extinction_threshold = extinction_threshold
+            extinction_threshold=extinction_threshold
         )
 
         isnothing(eq) && continue
@@ -188,7 +251,7 @@ while valid_id < n_valid_target && attempt < max_attempts
                 println(
                     "Rejected unstable ODE case | ",
                     "S_eq = ", eq.S_eq,
-                    " | C_eq = ", round(eq.C_eq, digits = 3),
+                    " | C_eq = ", round(eq.C_eq, digits=3),
                     " | Re_ode = ", eq.Re_ode_eq
                 )
             end
@@ -321,6 +384,30 @@ while valid_id < n_valid_target && attempt < max_attempts
     end
 end
 
+
+#=
+# check
+diag_df = DataFrame(map(valid_food_webs) do fw
+    J = fw.J_ode
+
+    diag_vals = abs.(diag(J))
+
+    Joff = copy(J)
+    Joff[diagind(Joff)] .= 0.0
+    off_vals = abs.(Joff[Joff .!= 0])
+
+    (
+        valid_id = fw.valid_id,
+        S_eq = fw.S_eq,
+        C_eq = fw.C_eq,
+        mean_diag_over_offdiag = mean(diag_vals) / mean(off_vals),
+        median_diag_over_offdiag = median(diag_vals) / median(off_vals),
+        max_diag_over_offdiag = maximum(diag_vals) / maximum(off_vals)
+    )
+end)
+describe(diag_df)
+=#
+
 # ============================================================
 # Save full Julia output
 # ============================================================
@@ -358,6 +445,8 @@ for fw in valid_food_webs
     e_value = Float64[]
     J_topdown = Float64[]
     J_bottomup = Float64[]
+    J_ode_diag_prey = Float64[]
+    J_ode_diag_predator = Float64[]
 
     for consumer in 1:richness_eq, resource in 1:richness_eq
         if cij_eq[consumer, resource] > 0
@@ -374,102 +463,6 @@ for fw in valid_food_webs
 
             push!(J_topdown, fw.J_emp[resource, consumer])
             push!(J_bottomup, fw.J_emp[consumer, resource])
-        end
-    end
-
-    n_links = length(cij_value)
-    n_links == 0 && continue
-
-    push!(
-        dep_rows,
-        DataFrame(
-            valid_id = fill(fw.valid_id, n_links),
-
-            S_label = fill(fw.S_label, n_links),
-            S_min = fill(fw.S_min, n_links),
-            S_max = fill(fw.S_max, n_links),
-            S_target = fill(fw.S_target, n_links),
-            rep = fill(fw.rep, n_links),
-
-            richness_eq = fill(richness_eq, n_links),
-            connectance_eq = fill(connectance_eq, n_links),
-            maxTL_eq = fill(maxTL_eq, n_links),
-            L_eq = fill(fw.L_eq, n_links),
-
-            Re_emp = fill(fw.Re_emp, n_links),
-            Re_ode = fill(fw.Re_ode, n_links),
-
-            prey = prey_idx,
-            predator = predator_idx,
-            cij = cij_value,
-            alpha = alpha_value,
-            omega = omega_value,
-            B_prey = B_prey,
-            B_predator = B_predator,
-            e = e_value,
-            J_topdown = J_topdown,
-            J_bottomup = J_bottomup
-        )
-    )
-end
-
-model_foodwebs_df = vcat(dep_rows...)
-Arrow.write(feather_file, model_foodwebs_df)
-
-
-#= update R feather file
-using JLD2
-using DataFrames
-using Arrow
-using SparseArrays
-using LinearAlgebra
-
-out_dir = "data/model_fws/linear_response_sim"
-out_file = joinpath(out_dir, "model_food_webs.jld2")
-feather_file = joinpath(out_dir, "model_food_webs.feather")
-
-loaded = load(out_file)
-valid_food_webs = loaded["valid_food_webs"]
-
-dep_rows = DataFrame[]
-
-for fw in valid_food_webs
-    richness_eq = fw.S_eq
-    connectance_eq = fw.C_eq
-    maxTL_eq = fw.maxTL_eq
-
-    prey_idx = Int[]
-    predator_idx = Int[]
-    cij_value = Float64[]
-    alpha_value = Float64[]
-    omega_value = Float64[]
-    B_prey = Float64[]
-    B_predator = Float64[]
-    e_value = Float64[]
-    J_topdown = Float64[]
-    J_bottomup = Float64[]
-    J_ode_diag_prey = Float64[]
-    J_ode_diag_predator = Float64[]
-
-    for consumer in 1:richness_eq, resource in 1:richness_eq
-        omega_cr = fw.omega_eq[consumer, resource]
-        c_ij = fw.alpha_eq[consumer] * omega_cr
-
-        if c_ij > 0
-            push!(prey_idx, resource)
-            push!(predator_idx, consumer)
-
-            push!(cij_value, c_ij)
-            push!(alpha_value, fw.alpha_eq[consumer])
-            push!(omega_value, omega_cr)
-
-            push!(B_prey, fw.B_eq[resource])
-            push!(B_predator, fw.B_eq[consumer])
-            push!(e_value, fw.e_eq[consumer, resource])
-
-            push!(J_topdown, fw.J_emp[resource, consumer])
-            push!(J_bottomup, fw.J_emp[consumer, resource])
-
             push!(J_ode_diag_prey, fw.J_ode[resource, resource])
             push!(J_ode_diag_predator, fw.J_ode[consumer, consumer])
         end
@@ -505,7 +498,6 @@ for fw in valid_food_webs
             B_prey = B_prey,
             B_predator = B_predator,
             e = e_value,
-
             J_topdown = J_topdown,
             J_bottomup = J_bottomup,
             J_ode_diag_prey = J_ode_diag_prey,
@@ -517,4 +509,3 @@ end
 model_foodwebs_df = vcat(dep_rows...)
 Arrow.write(feather_file, model_foodwebs_df)
 
-=#

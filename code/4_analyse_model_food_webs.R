@@ -1,5 +1,5 @@
 #============================================================
-# Whole-network dependency randomisation for niche-model food webs
+# Effects of dependency in model food webs
 #============================================================
 
 rm(list = ls())
@@ -19,22 +19,21 @@ filter <- dplyr::filter
 
 set.seed(2026)
 
-source(here("R/internal.R"))
+source(here("code/src/internal.R"))
 
 #------------------------------------------------------------
 # 1. Settings
 #------------------------------------------------------------
-out_dir <- here("data/model_fws/linear_response_sim")
-
-feather_file <- file.path(out_dir, "model_food_webs.feather")
+out_dir <- here("data/model_fws")
+feather_file <- file.path(out_dir, "model_food_webs_dependency_links.feather") # richness 10-40
 
 # TEST baseline stability:
 # "Re_emp"     = empirical-style Jacobian, diagonal = 0
 # "Re_intdiag" = off-diagonal trophic terms + interaction-derived diagonal only
 # "Re_ode"     = full ODE Jacobian, including interaction-derived and background diagonal
 
-# reference_type <- "Re_emp"
- reference_type <- "Re_intdiag"
+ reference_type <- "Re_emp" # To do randomization
+# reference_type <- "Re_intdiag"
 # reference_type <- "Re_ode"
 
 reference_label <- recode(
@@ -46,24 +45,22 @@ reference_label <- recode(
 
 reference_suffix <- paste0("_", reference_type)
 
-randomisation_rds <- file.path(
-  out_dir,
-  paste0("model_fw_dependency_randomisation", reference_suffix, ".rds")
-)
+randomisation_rds <- file.path(out_dir, 
+                               paste0("model_fw_dependency_randomization", reference_suffix, ".rds"))
 
-fig_jpeg <- here("figures", paste0("model_fws_dependency_combined", reference_suffix, ".jpeg"))
-fig_pdf  <- here("figures", paste0("model_fws_dependency_combined", reference_suffix, ".pdf"))
+fig_jpeg <- here("figures", paste0("model_fws_dependency_", reference_suffix, ".jpeg"))
+#fig_pdf  <- here("figures", paste0("model_fws_dependency_", reference_suffix, ".pdf"))
 
-n_rep <- 1000
-
-S_label_levels <- c("6_10", "11_15", "16_20", "21_25", "26_30")
+S_label_levels <- c("6_10", "11_15", "16_20", "21_25", "26_30", "31_35", "36_40")
 
 S_label_labs <- c(
   "6_10"  = "6–10",
   "11_15" = "11–15",
   "16_20" = "16–20",
   "21_25" = "21–25",
-  "26_30" = "26–30"
+  "26_30" = "26–30",
+  "31_35" = "31–35",
+  "36_40" = "36–40"
 )
 
 scenario_levels <- c(
@@ -72,6 +69,14 @@ scenario_levels <- c(
   "B_dependency",
   "e_dependency",
   "no_dependency"
+)
+
+scenario_labs <- c(
+  full_dependency = "Full structural\ndependency",
+  c_dependency    = "Interaction coefficient\ndependency",
+  B_dependency    = "Shared biomass\ndependency",
+  e_dependency    = "Shared efficiency\ndependency",
+  no_dependency   = "No dependency"
 )
 
 scenario_cols <- c(
@@ -84,13 +89,7 @@ scenario_cols <- c(
 
 scenario_cols_fill <- scales::alpha(scenario_cols, 0.25)
 
-scenario_labs <- c(
-  full_dependency = "Full structural\ndependency",
-  c_dependency    = "Interaction coefficient\nc dependency",
-  B_dependency    = "Shared biomass\nB dependency",
-  e_dependency    = "Shared efficiency\ne dependency",
-  no_dependency   = "No dependency"
-)
+n_rep <- 1000 # for each scenario and each model food web
 
 #------------------------------------------------------------
 # 2. Read Julia output and rebuild webs
@@ -112,31 +111,19 @@ web_objects <- modelfw_df %>%
 # Re_intdiag = stability of A + D_interaction
 # where A is the off-diagonal trophic matrix and D_interaction is the
 # interaction-derived diagonal only, without D_background.
-intdiag_reference <- map_dfr(names(web_objects), function(id) {
-  obj <- web_objects[[id]]
-  
-  interaction_diag_original <- get_interaction_diag_ode(
-    obj$C,
-    obj$B,
-    obj$e_link
+intdiag_reference <- map_dfr(web_objects, function(obj) {
+  J_intdiag <- build_jacobian(
+    obj$C, obj$B, obj$e_link,
+    J_diag = get_interaction_diag_ode(obj$C, obj$B, obj$e_link)
   )
   
-  J_intdiag_original <- build_jacobian(
-    obj$C,
-    obj$B,
-    obj$e_link,
-    J_diag = interaction_diag_original
-  )
-  
-  tibble(
-    valid_id = id,
-    Re_intdiag = get_Re_lmax(J_intdiag_original)
-  )
-})
+  tibble(Re_intdiag = get_Re_lmax(J_intdiag))
+}, .id = "valid_id")
+
 
 web_meta <- modelfw_df %>%
   distinct(
-    valid_id, S_label, S_target, rep,
+    valid_id, S_label, rep,
     richness_eq, connectance_eq, maxTL_eq, L_eq,
     Re_emp, Re_ode
   ) %>%
@@ -151,73 +138,40 @@ web_meta <- modelfw_df %>%
 #------------------------------------------------------------
 validation_check <- map_dfr(names(web_objects), function(id) {
   obj <- web_objects[[id]]
-  meta <- web_meta %>% filter(valid_id == id)
+  meta <- filter(web_meta, valid_id == id)
   
-  Re_emp_ref <- unique(meta$Re_emp)
-  Re_intdiag_ref <- unique(meta$Re_intdiag)
-  Re_ode_ref <- unique(meta$Re_ode)
+  J_emp <- build_jacobian(obj$C, obj$B, obj$e_link)
   
-  stopifnot(length(Re_emp_ref) == 1)
-  stopifnot(length(Re_intdiag_ref) == 1)
-  stopifnot(length(Re_ode_ref) == 1)
-  
-  # Empirical-style Jacobian: A only, diagonal = 0
-  J_emp_rebuilt <- build_jacobian(obj$C, obj$B, obj$e_link)
-  
-  # Interaction-derived diagonal only: A + D_interaction
-  interaction_diag_original <- get_interaction_diag_ode(
-    obj$C,
-    obj$B,
-    obj$e_link
+  J_intdiag <- build_jacobian(
+    obj$C, obj$B, obj$e_link,
+    J_diag = get_interaction_diag_ode(obj$C, obj$B, obj$e_link)
   )
   
-  J_intdiag_rebuilt <- build_jacobian(
-    obj$C,
-    obj$B,
-    obj$e_link,
-    J_diag = interaction_diag_original
+  J_ode <- build_jacobian(
+    obj$C, obj$B, obj$e_link,
+    J_diag = obj$J_ode_diag
   )
   
-  diff_Re_ode <- NA_real_
-  min_J_ode_diag <- NA_real_
-  max_J_ode_diag <- NA_real_
-  max_abs_offdiag_diff <- NA_real_
-  
-  if (!is.null(obj$J_ode_diag)) {
-    J_ode_rebuilt <- build_jacobian(
-      obj$C,
-      obj$B,
-      obj$e_link,
-      J_diag = obj$J_ode_diag
-    )
-    
-    J_ode_off <- J_ode_rebuilt
-    diag(J_ode_off) <- 0
-    
-    max_abs_offdiag_diff <- max(abs(J_emp_rebuilt - J_ode_off), na.rm = TRUE)
-    
-    diff_Re_ode <- get_Re_lmax(J_ode_rebuilt) - as.numeric(Re_ode_ref)
-    min_J_ode_diag <- min(obj$J_ode_diag, na.rm = TRUE)
-    max_J_ode_diag <- max(obj$J_ode_diag, na.rm = TRUE)
-  }
+  J_ode_off <- J_ode
+  diag(J_ode_off) <- 0
   
   tibble(
     valid_id = id,
-    diff_Re_emp = get_Re_lmax(J_emp_rebuilt) - as.numeric(Re_emp_ref),
-    diff_Re_intdiag = get_Re_lmax(J_intdiag_rebuilt) - as.numeric(Re_intdiag_ref),
-    max_abs_J_emp_diff = max(abs(J_emp_rebuilt - obj$J_emp), na.rm = TRUE),
-    max_abs_offdiag_diff = max_abs_offdiag_diff,
-    diff_Re_ode = diff_Re_ode,
-    min_J_ode_diag = min_J_ode_diag,
-    max_J_ode_diag = max_J_ode_diag
+    diff_Re_emp = get_Re_lmax(J_emp) - meta$Re_emp,
+    diff_Re_intdiag = get_Re_lmax(J_intdiag) - meta$Re_intdiag,
+    diff_Re_ode = get_Re_lmax(J_ode) - meta$Re_ode,
+    max_abs_J_emp_diff = max(abs(J_emp - obj$J_emp)),
+    max_abs_offdiag_diff = max(abs(J_emp - J_ode_off)),
+    min_J_ode_diag = min(obj$J_ode_diag),
+    max_J_ode_diag = max(obj$J_ode_diag)
   )
 })
 
-print(max(abs(validation_check$diff_Re_emp), na.rm = TRUE))
-print(max(abs(validation_check$diff_Re_intdiag), na.rm = TRUE))
-print(max(validation_check$max_abs_J_emp_diff, na.rm = TRUE))
-print(max(validation_check$max_abs_offdiag_diff, na.rm = TRUE))
-print(max(abs(validation_check$diff_Re_ode), na.rm = TRUE))
+max(abs(validation_check$diff_Re_emp))
+max(abs(validation_check$diff_Re_intdiag))
+max(validation_check$max_abs_J_emp_diff)
+max(validation_check$max_abs_offdiag_diff)
+max(abs(validation_check$diff_Re_ode))
 
 summary(validation_check$diff_Re_emp)
 summary(validation_check$diff_Re_intdiag)
@@ -229,112 +183,75 @@ summary(validation_check$max_abs_offdiag_diff)
 #------------------------------------------------------------
 reference_results <- web_meta %>%
   select(
-    valid_id, S_label, S_target,
+    valid_id, S_label, 
     richness_eq, connectance_eq, maxTL_eq, L_eq,
     reference_Re, Re_reference, Re_emp, Re_intdiag, Re_ode
   )
 
 #------------------------------------------------------------
-# 5. Randomisation
+# 5. Randomization
 #------------------------------------------------------------
 # Re_emp:
-#   J_rand = A_rand, diagonal = 0
+#   J_randomization = A_randomization, diagonal = 0
 #
 # Re_intdiag:
-#   J_rand = A_rand + D_interaction_rand
+#   J_randomization = A_randomization + D_interaction_rand
 #   background diagonal removed
 #
 # Re_ode:
-#   J_rand = A_rand + D_interaction_rand + D_background
+#   J_randomization = A_randomization + D_interaction_randomization + D_background
 # 
-# randomisation_results <- map_dfr(names(web_objects), function(id) {
-#   message("Running web: ", id)
-#   
-#   obj <- web_objects[[id]]
-#   meta <- web_meta %>% filter(valid_id == id)
-#   
-#   if (identical(reference_type, "Re_emp")) {
-#     
-#     background_diag <- NULL
-#     
-#   } else if (identical(reference_type, "Re_intdiag")) {
-#     
-#     if (is.null(obj$J_ode_diag)) {
-#       stop("J_ode_diag is missing. Update the Feather file before running Re_intdiag.")
-#     }
-#     
-#     # Remove D_background.
-#     # compute_randomised_Re_lmax_ode() will still add D_interaction_rand.
-#     background_diag <- rep(0, length(obj$J_ode_diag))
-#     
-#   } else if (identical(reference_type, "Re_ode")) {
-#     
-#     if (is.null(obj$J_ode_diag)) {
-#       stop("J_ode_diag is missing. Update the Feather file before running Re_ode.")
-#     }
-#     
-#     interaction_diag_original <- get_interaction_diag_ode(
-#       obj$C,
-#       obj$B,
-#       obj$e_link
-#     )
-#     
-#     background_diag <- obj$J_ode_diag - interaction_diag_original
-#     
-#   } else {
-#     stop("Unknown reference_type: ", reference_type)
-#   }
-#   
-#   map_dfr(scenario_levels, function(scen) {
-#     tibble(
-#       rep = seq_len(n_rep),
-#       valid_id = id,
-#       S_label = meta$S_label,
-#       S_target = meta$S_target,
-#       richness_eq = meta$richness_eq,
-#       connectance_eq = meta$connectance_eq,
-#       maxTL_eq = meta$maxTL_eq,
-#       L_eq = meta$L_eq,
-#       reference_Re = reference_type,
-#       scenario = scen,
-#       Re_lmax = map_dbl(
-#         seq_len(n_rep),
-#         ~ if (identical(reference_type, "Re_emp")) {
-#           compute_randomised_Re_lmax(
-#             obj$C,
-#             obj$B,
-#             obj$e_link,
-#             scen
-#           )
-#         } else {
-#           compute_randomised_Re_lmax_ode(
-#             obj$C,
-#             obj$B,
-#             obj$e_link,
-#             scen,
-#             background_diag
-#           )
-#         }
-#       )
-#     )
-#   })
-# }) %>%
-#   mutate(
-#     scenario = factor(scenario, levels = scenario_levels),
-#     S_label = factor(S_label, levels = S_label_levels)
-#   )
-# 
-# saveRDS(randomisation_results, randomisation_rds)
+randomisation_results <- map_dfr(names(web_objects), function(id) {
+  message("Running web: ", id)
+  
+  obj <- web_objects[[id]]
+  meta <- filter(web_meta, valid_id == id)
+  
+  background_diag <- switch(
+    reference_type,
+    Re_emp = NULL,
+    Re_intdiag = numeric(length(obj$B)),
+    Re_ode = obj$J_ode_diag -
+      get_interaction_diag_ode(obj$C, obj$B, obj$e_link)
+  )
+  
+  map_dfr(scenario_levels, function(scen) {
+    tibble(
+      rep = seq_len(n_rep),
+      valid_id = id,
+      S_label = meta$S_label,
+      S_target = meta$S_target,
+      richness_eq = meta$richness_eq,
+      connectance_eq = meta$connectance_eq,
+      maxTL_eq = meta$maxTL_eq,
+      L_eq = meta$L_eq,
+      reference_Re = reference_type,
+      scenario = scen,
+      Re_lmax = map_dbl(seq_len(n_rep), function(x) {
+        J_rand <- randomise_jacobian(
+          obj$C, obj$B, obj$e_link, scen,
+          background_diag = background_diag
+        )
+        get_Re_lmax(J_rand)
+      })
+    )
+  })
+}) %>%
+  mutate(
+    scenario = factor(scenario, levels = scenario_levels),
+    S_label = factor(S_label, levels = S_label_levels)
+  )
 
-randomisation_results <- readRDS(randomisation_rds)
+saveRDS(randomisation_results, randomisation_rds)
+
+# randomisation_results <- readRDS(randomisation_rds)
 
 #------------------------------------------------------------
 # 6. Calculate web-level SES deviations
 #------------------------------------------------------------
 rep_check <- randomisation_results %>%
   count(valid_id, scenario, name = "n_realisations")
-
-print(summary(rep_check$n_realisations))
+summary(rep_check$n_realisations)
 
 rep_check %>%
   count(n_realisations) %>%
@@ -346,7 +263,7 @@ rep_check %>%
 
 scenario_summary_by_web <- randomisation_results %>%
   group_by(
-    valid_id, S_label, S_target,
+    valid_id, S_label, 
     richness_eq, connectance_eq, maxTL_eq, L_eq,
     scenario
   ) %>%
@@ -361,28 +278,6 @@ scenario_summary_by_web <- randomisation_results %>%
     by = "valid_id"
   )
 
-analysis_df <- scenario_summary_by_web %>%
-  mutate(
-    raw_deviation_from_reference = mean_Re - Re_reference,
-    
-    ses_deviation_from_reference =
-      raw_deviation_from_reference / sd_Re,
-    
-    z_log_richness = make_z(log(richness_eq)),
-    z_log_connectance = make_z(log(connectance_eq)),
-    z_maxTL = make_z(maxTL_eq),
-    
-    scenario = factor(scenario, levels = scenario_levels),
-    S_label = factor(S_label, levels = S_label_levels)
-  ) %>%
-  filter(
-    is.finite(ses_deviation_from_reference),
-    is.finite(z_log_richness),
-    is.finite(z_log_connectance),
-    is.finite(z_maxTL)
-  )
-
-
 scenario_summary_by_web %>%
   group_by(scenario) %>%
   summarise(
@@ -390,7 +285,9 @@ scenario_summary_by_web %>%
     median_sd_Re = median(sd_Re, na.rm = TRUE),
     n_zero_sd = sum(sd_Re == 0, na.rm = TRUE),
     .groups = "drop"
-  ) %>%
+  ) 
+
+%>%
   print()
 
 #------------------------------------------------------------
@@ -424,13 +321,7 @@ full_dep_df <- scenario_summary_by_web %>%
     
     full_dependency_effect =
       full_dependency_effect_raw / sd_Re_no_dependency
-  ) %>%
-  filter(
-    is.finite(full_dependency_effect),
-    is.finite(z_log_richness),
-    is.finite(z_log_connectance),
-    is.finite(z_maxTL)
-  )
+  ) 
 
 full_dep_lm <- lm(
   full_dependency_effect ~ z_log_richness + z_log_connectance + z_maxTL,
@@ -457,8 +348,8 @@ model_r2 <- tibble(
   adj_r_squared = summary(full_dep_lm)$adj.r.squared
 )
 
-print(effect_table)
-print(model_r2)
+effect_table
+model_r2
 
 #------------------------------------------------------------
 # 8. Model-adjusted predictions
@@ -552,12 +443,16 @@ theme_dep <- function(base_size = 15) {
     )
 }
 
-plot_df <- analysis_df %>%
-  filter(!is.na(S_label), is.finite(ses_deviation_from_reference)) %>%
+plot_df <- scenario_summary_by_web %>%
   mutate(
+    raw_deviation_from_reference = mean_Re - Re_reference,
+    ses_deviation_from_reference = raw_deviation_from_reference / sd_Re,
+    z_log_richness = as.numeric(scale(log(richness_eq))),
+    z_log_connectance = as.numeric(scale(log(connectance_eq))),
+    z_maxTL = as.numeric(scale(maxTL_eq)),
     scenario = factor(scenario, levels = scenario_levels),
     S_label = factor(S_label, levels = S_label_levels)
-  )
+  ) 
 
 # Pairwise comparisons among scenarios within each richness bin
 mod_letters <- lmer(

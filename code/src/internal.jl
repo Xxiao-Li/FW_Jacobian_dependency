@@ -30,7 +30,6 @@ function random_linear_response_params(fw; alpha_range = (1.0, 10.0), α_range =
 end
 
 
-
 function persistence(B; threshold = 1e-8)
     mean(B .> threshold)
 end
