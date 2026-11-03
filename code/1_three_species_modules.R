@@ -9,6 +9,9 @@ library(cowplot)
 library(viridis)
 library(scales)
 library(here)
+library(emmeans)
+library(multcomp)
+library(multcompView)
 
 set.seed(2026)
 
@@ -119,6 +122,32 @@ df_all <- bind_rows(
 x_limits_sim <- range(df_all$T1)
 y_limits_sim <- range(df_all$T0)
 
+
+# -----------------------------------------------------------------------------
+# statistical analysis
+# -----------------------------------------------------------------------------
+
+# One-way ANOVA
+mod_igp <- aov(ReLambdaMax ~ Case, data = df_all)
+summary(mod_igp)
+
+# Estimated means and Tukey-adjusted pairwise comparisons
+emm_igp <- emmeans(mod_igp, ~ Case)
+pairs(emm_igp, adjust = "tukey")
+
+# Letters for the comparison plot
+letters_df <- multcomp::cld(
+  emm_igp,
+  adjust = "tukey",
+  Letters = letters,
+  sort = FALSE
+) %>%
+  as.data.frame() %>%
+  mutate(.group = trimws(.group))
+
+# -----------------------------------------------------------------------------
+# Panel a: analytical landscape
+# -----------------------------------------------------------------------------
 base_theme <- theme(
   axis.title = element_text(size = fs, colour = "black"),
   axis.text = element_text(size = fss, colour = "black"),
@@ -126,10 +155,6 @@ base_theme <- theme(
   plot.margin = margin(3, 3, 3, 3, "pt"),
   panel.grid = element_blank()
 )
-
-# -----------------------------------------------------------------------------
-# Panel a: analytical landscape
-# -----------------------------------------------------------------------------
 
 p_analytical <- ggplot(grid, aes(T1, T0, fill = ReLambdaMax)) +
   geom_raster(interpolate = TRUE) +
@@ -259,8 +284,8 @@ p_box <- ggplot(df_box, aes(Case, ReLambdaMax, fill = Case)) +
   scale_fill_manual(values = scenario_cols, guide = "none") +
   scale_x_discrete(labels = scenario_labs_short) +
   scale_y_continuous(
-    limits = c(0, 0.4),
-    breaks = seq(0, 0.4, 0.1)
+    limits = c(0, 0.2),
+    breaks = seq(0, 0.2, 0.1)
   ) +
   labs(
     x = NULL,
@@ -270,6 +295,42 @@ p_box <- ggplot(df_box, aes(Case, ReLambdaMax, fill = Case)) +
   theme_test(base_size = fs) +
   base_theme +
   theme(axis.text.x = element_text(angle = 30, hjust = 1))
+
+# -----------------------------------------------------------------------------
+# Panel g: scenario comparison
+# -----------------------------------------------------------------------------
+
+df_box <- df_all %>%
+  mutate(Case = factor(Case, levels = case_levels))
+
+p_box <- ggplot(df_box, aes(Case, ReLambdaMax, fill = Case)) +
+  # geom_jitter(
+  #   aes(colour = Case),
+  #   width = 0.15, height = 0,
+  #   alpha = 0.08, size = 0.4
+  # ) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.85, width = 0.7) +
+  geom_text(
+    data = letters_df,
+    aes(x = Case, y = 0.19, label = .group),
+    inherit.aes = FALSE,
+    size = 5.5,
+    fontface = "bold"
+  ) +
+  scale_fill_manual(values = scenario_cols, guide = "none") +
+  scale_colour_manual(values = scenario_cols, guide = "none") +
+  scale_x_discrete(labels = scenario_labs_short) +
+  scale_y_continuous(breaks = seq(0, 0.2, 0.1)) +
+  coord_cartesian(ylim = c(0, 0.2)) +
+  labs(
+    x = NULL,
+    y = expression(Re(lambda[max])),
+    title = "(g) Scenario comparison"
+  ) +
+  theme_test(base_size = fs) +
+  base_theme +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+p_box
 
 # -----------------------------------------------------------------------------
 # Combine and save
@@ -303,4 +364,6 @@ p_all
 
 ggsave(here("figures", "3_species_module_dependency.jpeg"),
        p_all, width = 14, height = 13, dpi = 600)
+ggsave(here("figures", "3_species_module_dependency.pdf"),
+       p_all, width = 14, height = 13)
 
