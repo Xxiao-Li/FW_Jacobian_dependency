@@ -8,6 +8,10 @@ library(tidyverse)
 library(here)
 library(colorspace)
 library(patchwork)
+library(lmerTest)
+library(emmeans)
+library(multcomp)
+library(multcompView)
 
 select <- dplyr::select
 filter <- dplyr::filter
@@ -31,11 +35,11 @@ scenario_labs <- c(
 )
 
 scenario_cols <- c(
-  full_dependency = "#1B9E77",
-  c_dependency    = "#7570B3",
-  B_dependency    = "#E6AB02",
-  e_dependency    = "#D95F02",
-  no_dependency   = "#666666"
+  full_dependency = "#009E73",  
+  c_dependency    = "#CC79A7",  
+  B_dependency    = "#E69F00", 
+  e_dependency    = "#D55E00",  
+  no_dependency   = "#0072B2"   
 )
 
 # -----------------------------------------------------------------------------
@@ -248,34 +252,63 @@ scenario_summary <- randomization_results %>%
 # Positive effect:
 # randomized Re(lambda_max) > empirical Re(lambda_max)
 
+check_df <- scenario_summary %>%
+  mutate(
+    difference = mean_Re - Re_emp,
+    abs_difference = abs(difference),
+    abs_SES = abs(standardized_effect)
+  )
+
+# How many food webs have randomised means above the empirical value?
+count_summary <- check_df %>%
+  group_by(scenario) %>%
+  summarise(
+    n_webs = n(),
+    n_above_empirical = sum(difference > 0),
+    n_below_empirical = sum(difference < 0),
+    n_equal_empirical = sum(difference == 0),
+    .groups = "drop"
+  )
+
+print(count_summary)
+
 # -----------------------------------------------------------------------------
-# 7. Paired scenario comparisons
+# 7. Statistical analysis
 # -----------------------------------------------------------------------------
 
-scenario_wide <- scenario_summary %>%
-  select(web_id, scenario, mean_Re) %>%
-  pivot_wider(names_from = scenario, values_from = mean_Re)
-
-friedman_result <- friedman.test(
-  as.matrix(scenario_wide[scenario_levels])
+mod_lc <- lmerTest::lmer(
+  standardized_effect ~ scenario + (1 | web_id),
+  data = scenario_summary
 )
 
-pairwise_tests <- combn(scenario_levels, 2, simplify = FALSE) %>%
-  map_dfr(\(x) {
-    v1 <- scenario_wide[[x[1]]]
-    v2 <- scenario_wide[[x[2]]]
-    
-    tibble(
-      scenario_1 = x[1],
-      scenario_2 = x[2],
-      median_difference = median(v1 - v2),
-      p_value = wilcox.test(v1, v2, paired = TRUE)$p.value
-    )
-  }) %>%
-  mutate(p_adjusted = p.adjust(p_value, method = "holm"))
+# ANOVA-style test of scenario differences
+anova_result <- anova(mod_lc, ddf = "Satterthwaite")
+print(anova_result)
+
+# Estimated means and Tukey-adjusted pairwise comparisons
+emm_lc <- emmeans(
+  mod_lc, ~ scenario,
+  lmer.df = "satterthwaite"
+)
+
+pairwise_tests <- pairs(emm_lc, adjust = "tukey")
+print(pairwise_tests)
+
+# Letters for the SES plot
+letters_df <- multcomp::cld(
+  emm_lc,
+  adjust = "tukey",
+  alpha = 0.05,
+  Letters = letters,
+  sort = FALSE
+) %>%
+  as.data.frame() %>%
+  mutate(.group = trimws(.group)) %>%
+  select(scenario, .group)
+
 
 # -----------------------------------------------------------------------------
-# 8. Plotting data
+# 8. Plotting
 # -----------------------------------------------------------------------------
 
 time_index <- empirical_results %>%
@@ -332,21 +365,53 @@ p_time <- ggplot(
     axis.text = element_text(colour = "black")
   )
 
+# Letter positions
+y_gap <- 0.09 * max(
+  1,
+  diff(range(scenario_summary$standardized_effect, na.rm = TRUE))
+)
+
+letter_positions <- scenario_summary %>%
+  group_by(scenario) %>%
+  summarise(
+    label_y = max(standardized_effect, na.rm = TRUE) + y_gap,
+    .groups = "drop"
+  ) %>%
+  left_join(letters_df, by = "scenario")
+
 p_ses <- ggplot(
   scenario_summary,
   aes(scenario, standardized_effect, fill = scenario, colour = scenario)
 ) +
   geom_hline(yintercept = 0, linetype = "dashed") +
-  geom_boxplot(width = 0.58, outlier.shape = NA, alpha = 0.68) +
-  geom_jitter(width = 0.12, size = 1.4) +
+  geom_boxplot(
+    width = 0.58,
+    outlier.shape = NA,
+    alpha = 0.68
+  ) +
+  geom_jitter(
+    width = 0.12, height = 0,
+    size = 1.4, alpha = 0.7
+  ) +
+  geom_text(
+    data = letter_positions,
+    aes(x = scenario, y = label_y, label = .group),
+    inherit.aes = FALSE,
+    colour = "black",
+    size = 5.5,
+    fontface = "bold"
+  ) +
   scale_fill_manual(values = scenario_cols) +
   scale_colour_manual(values = scenario_cols) +
   scale_x_discrete(labels = scenario_labs) +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.10))) +
   guides(fill = "none", colour = "none") +
-  labs(x = NULL, y = "Standardized deviation from empirical") +
+  labs(x = NULL, y = "SES") +
   theme_classic(base_size = fs) +
   theme(
-    panel.border = element_rect(colour = "black", fill = NA, linewidth = 0.45),
+    panel.border = element_rect(
+      colour = "black", fill = NA, linewidth = 0.45
+    ),
     axis.line = element_blank(),
     axis.text.x = element_text(angle = 45, hjust = 1),
     axis.text = element_text(colour = "black")
@@ -358,5 +423,7 @@ final_plot
 
 ggsave(here("figures", "LakeConstance_dependency.jpeg"), 
        final_plot, width = 12, height = 10, dpi = 600)
+ggsave(here("figures", "LakeConstance_dependency.pdf"), 
+       final_plot, width = 12, height = 10)
 
 write_csv(scenario_summary, here("data", "LC_fws", "dependency_randomization_summary.csv"))
