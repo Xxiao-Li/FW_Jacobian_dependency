@@ -36,11 +36,11 @@ scenario_labs_short <- c(
 )
 
 scenario_cols <- c(
-  "(b) Full dependency" = "#1B9E77",
-  "(c) Feeding-coefficient\ndependency" = "#7570B3",
-  "(d) Shared-biomass\ndependency" = "#E6AB02",
-  "(e) Shared-efficiency\ndependency" = "#D95F02",
-  "(f) No dependency" = "#666666"
+  "(b) Full dependency" = "#009E73",
+  "(c) Feeding-coefficient\ndependency" = "#CC79A7",
+  "(d) Shared-biomass\ndependency" = "#E69F00",
+  "(e) Shared-efficiency\ndependency" = "#D55E00",
+  "(f) No dependency" = "#0072B2"
 )
 
 get_re_lmax <- function(T1, T0) {
@@ -199,9 +199,9 @@ p_ratio <- ggplot(grid_ratio, aes(ratio, ReLambdaMax, colour = sign_T0)) +
     labels = c(
       positive = expression(T[0] >= 0),
       negative = expression(T[0] < 0)
-    ),
-    name = expression(sign(T[0]))
-  ) +
+    ), name = "" ) +
+  guides(colour = guide_legend(
+    override.aes = list(alpha = 1, size = 2))) +
   scale_x_log10(labels = label_number()) +
   labs(
     x = expression("|" * T[0] * "| / |" * T[1] * "|"),
@@ -215,7 +215,7 @@ p_ratio <- ggplot(grid_ratio, aes(ratio, ReLambdaMax, colour = sign_T0)) +
     legend.title = element_text(size = fss - 1),
     legend.text = element_text(size = fss - 1),
     legend.background = element_rect(
-      fill = alpha("white", 0.75),
+      fill = NA,
       colour = NA
     )
   )
