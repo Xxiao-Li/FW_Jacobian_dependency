@@ -13,6 +13,7 @@ Design:
 
 using Pkg
 Pkg.activate(".")
+Pkg.instantiate()
 
 using EcologicalNetworksDynamics
 using Random
