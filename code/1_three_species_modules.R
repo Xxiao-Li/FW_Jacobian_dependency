@@ -21,7 +21,7 @@ fss <- 18
 
 case_levels <- c(
   "(b) Full dependency",
-  "(c) Feeding-coefficient\ndependency",
+  "(c) Interaction-coefficient\ndependency",
   "(d) Shared-biomass\ndependency",
   "(e) Shared-efficiency\ndependency",
   "(f) No dependency"
@@ -29,7 +29,7 @@ case_levels <- c(
 
 scenario_labs_short <- c(
   "(b) Full dependency" = "Full",
-  "(c) Feeding-coefficient\ndependency" = "Feeding coefficient",
+  "(c) Interaction-coefficient\ndependency" = "Interaction coefficient",
   "(d) Shared-biomass\ndependency" = "Shared biomass",
   "(e) Shared-efficiency\ndependency" = "Shared efficiency",
   "(f) No dependency" = "No"
@@ -37,7 +37,7 @@ scenario_labs_short <- c(
 
 scenario_cols <- c(
   "(b) Full dependency" = "#009E73",
-  "(c) Feeding-coefficient\ndependency" = "#CC79A7",
+  "(c) Interaction-coefficient\ndependency" = "#CC79A7",
   "(d) Shared-biomass\ndependency" = "#E69F00",
   "(e) Shared-efficiency\ndependency" = "#D55E00",
   "(f) No dependency" = "#0072B2"
@@ -112,7 +112,7 @@ grid <- expand_grid(
 
 df_all <- bind_rows(
   simulate_scenario("(b) Full dependency", TRUE, TRUE, TRUE),
-  simulate_scenario("(c) Feeding-coefficient\ndependency", TRUE, FALSE, FALSE),
+  simulate_scenario("(c) Interaction-coefficient\ndependency", TRUE, FALSE, FALSE),
   simulate_scenario("(d) Shared-biomass\ndependency", FALSE, TRUE, FALSE),
   simulate_scenario("(e) Shared-efficiency\ndependency", FALSE, FALSE, TRUE),
   simulate_scenario("(f) No dependency", FALSE, FALSE, FALSE)
@@ -267,7 +267,7 @@ plot_scenario <- function(case, show_legend = FALSE) {
 }
 
 p_full <- plot_scenario("(b) Full dependency")
-p_c <- plot_scenario("(c) Feeding-coefficient\ndependency")
+p_c <- plot_scenario("(c) Interaction-coefficient\ndependency")
 p_B <- plot_scenario("(d) Shared-biomass\ndependency")
 p_e <- plot_scenario("(e) Shared-efficiency\ndependency")
 p_no <- plot_scenario("(f) No dependency", TRUE)
@@ -362,8 +362,8 @@ p_all <- plot_grid(
 
 p_all
 
-ggsave(here("figures", "3_species_module_dependency.jpeg"),
+ggsave(here("figures", "Figure2.jpeg"),
        p_all, width = 14, height = 13, dpi = 600)
-ggsave(here("figures", "3_species_module_dependency.pdf"),
+ggsave(here("figures", "Figure2.pdf"),
        p_all, width = 14, height = 13)
 

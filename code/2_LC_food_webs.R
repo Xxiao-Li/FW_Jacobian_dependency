@@ -27,11 +27,11 @@ scenario_levels <- c(
 )
 
 scenario_labs <- c(
-  full_dependency = "Full dependency",
-  c_dependency    = "Feeding-coefficient\ndependency",
+  full_dependency = "Full\ndependency",
+  c_dependency    = "Interaction-coefficient\ndependency",
   B_dependency    = "Shared-biomass\ndependency",
   e_dependency    = "Shared-efficiency\ndependency",
-  no_dependency   = "No dependency"
+  no_dependency   = "No\ndependency"
 )
 
 scenario_cols <- c(
@@ -421,9 +421,9 @@ final_plot <- p_time / p_ses +
   plot_annotation(tag_levels = "a", tag_prefix = "(", tag_suffix = ")")
 final_plot
 
-ggsave(here("figures", "LakeConstance_dependency.jpeg"), 
+ggsave(here("figures", "Figure3.jpeg"), 
        final_plot, width = 12, height = 10, dpi = 600)
-ggsave(here("figures", "LakeConstance_dependency.pdf"), 
+ggsave(here("figures", "Figure3.pdf"), 
        final_plot, width = 12, height = 10)
 
-write_csv(scenario_summary, here("data", "LC_fws", "dependency_randomization_summary.csv"))
+#write_csv(scenario_summary, here("data", "LC_fws", "dependency_randomization_summary.csv"))
