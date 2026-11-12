@@ -131,7 +131,7 @@ p_Jii_role <- jacobian_diagonal_elements %>%
   theme_dep(20)
 
 ggsave(
-  here("figures", "FigureS1_left.jpeg"),
+  here("figures", "FigureS2_left.jpeg"),
   p_Jii_role, width = 10, height = 7, dpi = 600
 )
 
@@ -160,6 +160,6 @@ p_diag_offdiag <- ggplot(
   theme_dep(20)
 
 ggsave(
-  here("figures", "FigureS1_right.jpeg"),
+  here("figures", "FigureS2_right.jpeg"),
   p_diag_offdiag, width = 8, height = 7, dpi = 600
 )
